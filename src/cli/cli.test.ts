@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -62,6 +62,24 @@ describe("CLI smoke behavior", () => {
     expect(eventsHelp.stderr).toBe("");
     expect(eventsHelp.stdout).toContain("events events");
     expect(eventsHelp.stdout).toContain("events emit");
+  });
+
+  test("prints nested command help without mutating channels or events", async () => {
+    const addHelp = await runCli(["webhooks", "add", "--help"]);
+    expect(addHelp.exitCode).toBe(0);
+    expect(addHelp.stderr).toBe("");
+    expect(addHelp.stdout).toContain("webhooks add");
+
+    const emitHelp = await runCli(["events", "emit", "--help"]);
+    expect(emitHelp.exitCode).toBe(0);
+    expect(emitHelp.stderr).toBe("");
+    expect(emitHelp.stdout).toContain("events emit");
+
+    const listHooks = await runCli(["webhooks", "list"]);
+    expect(JSON.parse(listHooks.stdout)).toEqual([]);
+
+    const listEvents = await runCli(["events", "list"]);
+    expect(JSON.parse(listEvents.stdout)).toEqual([]);
   });
 
   test("can be embedded with app name and default source", async () => {
@@ -130,5 +148,40 @@ describe("CLI smoke behavior", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  test("uses command transport --arg values without forwarding --arg to the process", async () => {
+    const receiverPath = join(dataDir, "receiver.js");
+    const outputPath = join(dataDir, "received.jsonl");
+    writeFileSync(receiverPath, `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(outputPath)}, process.env.HASNA_EVENT_JSON + "\\n");\n`);
+
+    const add = await runCli([
+      "webhooks",
+      "add",
+      "bun",
+      "--id",
+      "command-hook",
+      "--transport",
+      "command",
+      "--type",
+      "command.*",
+      "--arg",
+      receiverPath,
+    ]);
+    expect(add.exitCode).toBe(0);
+    expect(JSON.parse(add.stdout)).toMatchObject({
+      id: "command-hook",
+      command: { command: "bun", args: [receiverPath] },
+    });
+
+    const emit = await runCli(["events", "emit", "command.created", "--source", "cli-test"]);
+    expect(emit.exitCode).toBe(0);
+    expect(JSON.parse(emit.stdout).deliveries[0]).toMatchObject({ channelId: "command-hook", status: "success" });
+
+    expect(existsSync(outputPath)).toBe(true);
+    expect(JSON.parse(readFileSync(outputPath, "utf-8").trim())).toMatchObject({
+      source: "cli-test",
+      type: "command.created",
+    });
   });
 });

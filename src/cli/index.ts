@@ -42,9 +42,18 @@ function parseGlobalArgs(argv: string[]): ParsedArgs {
 }
 
 function takeOption(args: string[], name: string): string | undefined {
+  const equalsPrefix = `${name}=`;
+  const equalsIndex = args.findIndex((arg) => arg.startsWith(equalsPrefix));
+  if (equalsIndex !== -1) {
+    const value = args[equalsIndex]?.slice(equalsPrefix.length);
+    args.splice(equalsIndex, 1);
+    return value;
+  }
+
   const index = args.indexOf(name);
   if (index === -1) return undefined;
   const value = args[index + 1];
+  if (value === undefined) throw new Error(`${name} requires a value`);
   args.splice(index, 2);
   return value;
 }
@@ -58,7 +67,7 @@ function takeFlag(args: string[], name: string): boolean {
 
 function takeMany(args: string[], name: string): string[] {
   const values: string[] = [];
-  while (args.includes(name)) {
+  while (args.includes(name) || args.some((arg) => arg.startsWith(`${name}=`))) {
     const value = takeOption(args, name);
     if (value !== undefined) values.push(value);
   }
@@ -191,11 +200,19 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
       printWebhooksHelp(options);
       return;
     }
+    if (tail.includes("--help") || tail.includes("-h")) {
+      printWebhooksHelp(options);
+      return;
+    }
     await handleWebhooks(client, command, tail, parsed, options);
     return;
   }
   if (group === "events") {
     if (!command || command === "--help" || command === "-h") {
+      printEventsHelp(options);
+      return;
+    }
+    if (tail.includes("--help") || tail.includes("-h")) {
       printEventsHelp(options);
       return;
     }
@@ -217,6 +234,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     const retryBackoffMs = numberOption(takeOption(args, "--retry-backoff-ms"));
     const disabled = takeFlag(args, "--disabled");
     const headerValues = takeMany(args, "--header");
+    const commandArgs = takeMany(args, "--arg");
     const redactions = takeMany(args, "--redact");
     const filters = parseFilter(args);
     const target = args[0];
@@ -236,7 +254,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     if (transport === "webhook") {
       channel.webhook = { url: target, secret, headers: parseHeaders(headerValues), timeoutMs };
     } else if (transport === "command") {
-      channel.command = { command: target, args: args.slice(1), timeoutMs };
+      channel.command = { command: target, args: [...args.slice(1), ...commandArgs], timeoutMs };
     } else {
       throw new Error(`Transport ${transport} is reserved for future use and cannot be added yet`);
     }
