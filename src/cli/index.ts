@@ -1,0 +1,307 @@
+#!/usr/bin/env bun
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { EventsClient, JsonEventsStore, getEventsDataDir, sanitizeChannelForOutput, sanitizeChannelsForOutput, type ChannelConfig, type EventFilter, type TransportKind } from "../index.js";
+
+interface ParsedArgs {
+  json: boolean;
+  dir?: string;
+  rest: string[];
+}
+
+function version(): string {
+  try {
+    const packagePath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
+    return JSON.parse(readFileSync(packagePath, "utf-8")).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+function parseGlobalArgs(argv: string[]): ParsedArgs {
+  const rest: string[] = [];
+  let json = false;
+  let dir: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--json" || arg === "-j") {
+      json = true;
+    } else if (arg === "--dir") {
+      dir = argv[++index];
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { json, dir, rest };
+}
+
+function takeOption(args: string[], name: string): string | undefined {
+  const index = args.indexOf(name);
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  args.splice(index, 2);
+  return value;
+}
+
+function takeFlag(args: string[], name: string): boolean {
+  const index = args.indexOf(name);
+  if (index === -1) return false;
+  args.splice(index, 1);
+  return true;
+}
+
+function takeMany(args: string[], name: string): string[] {
+  const values: string[] = [];
+  while (args.includes(name)) {
+    const value = takeOption(args, name);
+    if (value !== undefined) values.push(value);
+  }
+  return values;
+}
+
+function parseJsonOption(value: string | undefined, fallback: Record<string, unknown>): Record<string, unknown> {
+  if (!value) return fallback;
+  const parsed = JSON.parse(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Expected a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function parseFilter(args: string[]): EventFilter[] | undefined {
+  const filter: EventFilter = {};
+  const type = takeOption(args, "--type") ?? takeOption(args, "--event-type");
+  const source = takeOption(args, "--source");
+  const subject = takeOption(args, "--subject");
+  const severity = takeOption(args, "--severity");
+  if (type) filter.type = type;
+  if (source) filter.source = source;
+  if (subject) filter.subject = subject;
+  if (severity) filter.severity = severity;
+  return Object.keys(filter).length > 0 ? [filter] : undefined;
+}
+
+function parseHeaders(values: string[]): Record<string, string> | undefined {
+  if (values.length === 0) return undefined;
+  const headers: Record<string, string> = {};
+  for (const value of values) {
+    const separator = value.indexOf("=");
+    if (separator === -1) throw new Error(`Invalid header, expected name=value: ${value}`);
+    headers[value.slice(0, separator)] = value.slice(separator + 1);
+  }
+  return headers;
+}
+
+function output(parsed: ParsedArgs, value: unknown, human: () => void): void {
+  if (parsed.json) {
+    console.log(JSON.stringify(value, null, 2));
+    return;
+  }
+  human();
+}
+
+function printHelp(): void {
+  console.log(`events ${version()}
+
+Usage:
+  events [--dir <path>] [--json] webhooks add <url|command> [options]
+  events [--dir <path>] [--json] webhooks list
+  events [--dir <path>] [--json] webhooks remove <id>
+  events [--dir <path>] [--json] webhooks test <id>
+  events [--dir <path>] [--json] events emit <type> --source <source> [options]
+  events [--dir <path>] [--json] events list [--limit <n>]
+  events [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+
+Environment:
+  HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}`);
+}
+
+async function main(argv = process.argv.slice(2)): Promise<void> {
+  const parsed = parseGlobalArgs(argv);
+  const [group, command, ...tail] = parsed.rest;
+  if (!group || group === "--help" || group === "-h") {
+    printHelp();
+    return;
+  }
+  if (group === "--version" || group === "-v") {
+    console.log(version());
+    return;
+  }
+
+  const store = new JsonEventsStore(parsed.dir);
+  const client = new EventsClient({ store });
+
+  if (group === "webhooks") {
+    await handleWebhooks(client, command, tail, parsed);
+    return;
+  }
+  if (group === "events") {
+    await handleEvents(client, command, tail, parsed);
+    return;
+  }
+  throw new Error(`Unknown command group: ${group}`);
+}
+
+async function handleWebhooks(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs): Promise<void> {
+  if (command === "add") {
+    const args = [...tail];
+    const transport = (takeOption(args, "--transport") ?? "webhook") as TransportKind;
+    const id = takeOption(args, "--id") ?? crypto.randomUUID();
+    const name = takeOption(args, "--name");
+    const secret = takeOption(args, "--secret");
+    const timeoutMs = numberOption(takeOption(args, "--timeout-ms"));
+    const retryAttempts = numberOption(takeOption(args, "--retry-attempts"));
+    const retryBackoffMs = numberOption(takeOption(args, "--retry-backoff-ms"));
+    const disabled = takeFlag(args, "--disabled");
+    const headerValues = takeMany(args, "--header");
+    const redactions = takeMany(args, "--redact");
+    const filters = parseFilter(args);
+    const target = args[0];
+    if (!target) throw new Error("webhooks add requires a URL or command target");
+    const now = new Date().toISOString();
+    const channel: ChannelConfig = {
+      id,
+      name,
+      enabled: !disabled,
+      transport,
+      filters,
+      retry: retryAttempts || retryBackoffMs ? { maxAttempts: retryAttempts, backoffMs: retryBackoffMs } : undefined,
+      redact: redactions.length > 0 ? { paths: redactions } : undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (transport === "webhook") {
+      channel.webhook = { url: target, secret, headers: parseHeaders(headerValues), timeoutMs };
+    } else if (transport === "command") {
+      channel.command = { command: target, args: args.slice(1), timeoutMs };
+    } else {
+      throw new Error(`Transport ${transport} is reserved for future use and cannot be added yet`);
+    }
+    const saved = await client.addChannel(channel);
+    output(parsed, sanitizeChannelForOutput(saved), () => console.log(`Added ${saved.transport} channel ${saved.id}`));
+    return;
+  }
+
+  if (command === "list") {
+    const channels = await client.listChannels();
+    output(parsed, sanitizeChannelsForOutput(channels), () => {
+      if (channels.length === 0) {
+        console.log("No channels configured.");
+        return;
+      }
+      for (const channel of channels) {
+        const target = channel.webhook?.url ?? channel.command?.command ?? channel.transport;
+        console.log(`${channel.id}\t${channel.enabled ? "enabled" : "disabled"}\t${channel.transport}\t${target}`);
+      }
+    });
+    return;
+  }
+
+  if (command === "remove") {
+    const id = tail[0];
+    if (!id) throw new Error("webhooks remove requires a channel id");
+    const removed = await client.removeChannel(id);
+    output(parsed, { removed }, () => console.log(removed ? `Removed ${id}` : `Channel not found: ${id}`));
+    return;
+  }
+
+  if (command === "test") {
+    const args = [...tail];
+    const id = args.shift();
+    if (!id) throw new Error("webhooks test requires a channel id");
+    const result = await client.testChannel(id, {
+      source: takeOption(args, "--source") ?? "hasna.events",
+      type: takeOption(args, "--type") ?? "events.test",
+      subject: takeOption(args, "--subject") ?? id,
+      data: parseJsonOption(takeOption(args, "--data"), { test: true }),
+    });
+    output(parsed, result, () => console.log(`${result.status}: ${result.channelId}`));
+    return;
+  }
+
+  throw new Error(`Unknown webhooks command: ${command ?? ""}`);
+}
+
+async function handleEvents(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs): Promise<void> {
+  if (command === "emit") {
+    const args = [...tail];
+    const type = args.shift();
+    if (!type) throw new Error("events emit requires an event type");
+    const source = takeOption(args, "--source");
+    if (!source) throw new Error("events emit requires --source");
+    const noDeliver = takeFlag(args, "--no-deliver");
+    const result = await client.emit({
+      type,
+      source,
+      subject: takeOption(args, "--subject"),
+      severity: severityOption(takeOption(args, "--severity")),
+      message: takeOption(args, "--message"),
+      dedupeKey: takeOption(args, "--dedupe-key"),
+      data: parseJsonOption(takeOption(args, "--data"), {}),
+      metadata: parseJsonOption(takeOption(args, "--metadata"), {}),
+    }, { deliver: !noDeliver });
+    output(parsed, result, () => console.log(`${result.deduped ? "Deduped" : "Emitted"} ${result.event.id} to ${result.deliveries.length} channel(s)`));
+    return;
+  }
+
+  if (command === "list") {
+    const args = [...tail];
+    const limit = numberOption(takeOption(args, "--limit"));
+    const type = takeOption(args, "--type");
+    const source = takeOption(args, "--source");
+    let events = await client.listEvents();
+    if (type) events = events.filter((event) => event.type === type);
+    if (source) events = events.filter((event) => event.source === source);
+    if (limit) events = events.slice(-limit);
+    output(parsed, events, () => {
+      if (events.length === 0) {
+        console.log("No events recorded.");
+        return;
+      }
+      for (const event of events) {
+        console.log(`${event.time}\t${event.id}\t${event.source}\t${event.type}\t${event.severity}`);
+      }
+    });
+    return;
+  }
+
+  if (command === "replay") {
+    const args = [...tail];
+    const result = await client.replay({
+      eventId: takeOption(args, "--id"),
+      source: takeOption(args, "--source"),
+      type: takeOption(args, "--type"),
+      dryRun: takeFlag(args, "--dry-run"),
+    });
+    output(parsed, result, () => console.log(`Replayed ${result.events.length} event(s), ${result.deliveries.length} delivery result(s)`));
+    return;
+  }
+
+  throw new Error(`Unknown events command: ${command ?? ""}`);
+}
+
+function numberOption(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`Expected a number, got ${value}`);
+  return parsed;
+}
+
+function severityOption(value: string | undefined) {
+  if (!value) return undefined;
+  const allowed = new Set(["debug", "info", "notice", "warning", "error", "critical"]);
+  if (!allowed.has(value)) throw new Error(`Invalid severity: ${value}`);
+  return value as "debug" | "info" | "notice" | "warning" | "error" | "critical";
+}
+
+main().catch((error) => {
+  const parsed = parseGlobalArgs(process.argv.slice(2));
+  const message = error instanceof Error ? error.message : String(error);
+  if (parsed.json) {
+    console.log(JSON.stringify({ error: message }, null, 2));
+  } else {
+    console.error(message);
+  }
+  process.exit(1);
+});

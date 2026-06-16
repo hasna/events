@@ -1,0 +1,252 @@
+# @hasna/events
+
+Shared event envelopes, subscription config, webhook delivery, and command dispatch for Hasna open-source apps.
+
+This package is local-first. By default it stores JSON files under `~/.hasna/events`:
+
+- `channels.json`
+- `events.json`
+- `deliveries.json`
+
+Override the data directory with `HASNA_EVENTS_DIR`, `HASNA_EVENTS_HOME`, or the CLI `--dir` flag.
+
+## Install
+
+```bash
+bun add @hasna/events
+```
+
+This package is not published by this repository setup step. Apps can also depend on the local workspace path while the rollout is in progress.
+
+## Event Envelope
+
+All apps should emit the same stable envelope:
+
+```ts
+import { EventsClient } from "@hasna/events";
+
+const events = new EventsClient();
+
+await events.emit({
+  id: "optional-stable-id",
+  source: "tickets",
+  type: "ticket.created",
+  time: new Date(),
+  subject: "ticket:123",
+  severity: "notice",
+  data: { ticketId: 123 },
+  message: "Ticket created",
+  dedupeKey: "tickets:ticket:123:created",
+  schemaVersion: "1.0",
+  metadata: { tenant: "acme" },
+});
+```
+
+Envelope fields are:
+
+- `id`
+- `source`
+- `type`
+- `time`
+- `subject`
+- `severity`
+- `data`
+- `message`
+- `dedupeKey`
+- `schemaVersion`
+- `metadata`
+
+`source` should be the emitting app or bounded context. `type` should use dot notation such as `ticket.created`, `repo.synced`, or `check.failed`.
+
+## Channels And Filters
+
+Channels are reusable subscriptions. They can be enabled or disabled, filtered by source/type/subject/severity, and configured with transport-specific settings.
+
+```ts
+await events.addChannel({
+  id: "ops-webhook",
+  enabled: true,
+  transport: "webhook",
+  filters: [{ type: "ticket.*", severity: ["warning", "error", "critical"] }],
+  webhook: {
+    url: "https://example.com/webhooks/hasna",
+    secret: process.env.HASNA_WEBHOOK_SECRET,
+  },
+  retry: {
+    maxAttempts: 3,
+    backoffMs: 500,
+    multiplier: 2,
+  },
+  redact: {
+    paths: ["data.token", "metadata.authorization"],
+  },
+});
+```
+
+Filters support `*` wildcards and nested `data` or `metadata` paths.
+
+## Webhook Transport
+
+Webhook delivery sends a `POST` with the event envelope as JSON.
+
+Headers:
+
+- `X-Hasna-Event-Id`
+- `X-Hasna-Event-Type`
+- `X-Hasna-Timestamp`
+- `X-Hasna-Signature` when `webhook.secret` is configured
+
+Signatures use HMAC-SHA256 over:
+
+```text
+<timestamp>.<json-body>
+```
+
+The signature format is:
+
+```text
+sha256=<hex digest>
+```
+
+Consumers can verify with:
+
+```ts
+import { verifyWebhookSignature } from "@hasna/events/signing";
+
+const ok = verifyWebhookSignature(secret, timestamp, body, signature);
+```
+
+`verifyWebhookSignature` rejects timestamps outside a five-minute window by default.
+Pass an explicit `toleranceMs` when a consumer needs a tighter or wider replay
+window.
+
+## Command Transport
+
+Command channels run a local process and pass the event on stdin and environment variables.
+
+```ts
+await events.addChannel({
+  id: "local-handler",
+  enabled: true,
+  transport: "command",
+  filters: [{ type: "repo.*" }],
+  command: {
+    command: "bun",
+    args: ["run", "scripts/handle-event.ts"],
+  },
+});
+```
+
+Environment variables:
+
+- `HASNA_CHANNEL_ID`
+- `HASNA_EVENT_ID`
+- `HASNA_EVENT_TYPE`
+- `HASNA_EVENT_SOURCE`
+- `HASNA_EVENT_SUBJECT`
+- `HASNA_EVENT_SEVERITY`
+- `HASNA_EVENT_TIME`
+- `HASNA_EVENT_DEDUPE_KEY`
+- `HASNA_EVENT_SCHEMA_VERSION`
+- `HASNA_EVENT_JSON`
+
+The transport type union already reserves `email`, `sse`, and `mcp-relay` for later implementations.
+
+## Redaction
+
+Events scrub obvious sensitive keys such as `secret`, `token`, `password`,
+`apiKey`, and `authorization` before local storage and delivery by default.
+Callers that intentionally need raw local payloads can pass:
+
+```ts
+await events.emit(input, { redactSensitiveData: false });
+```
+
+Use channel-level paths for config-only redaction:
+
+```ts
+await events.addChannel({
+  id: "secure-hook",
+  enabled: true,
+  transport: "webhook",
+  webhook: { url: "https://example.com" },
+  redact: { paths: ["data.secret", "metadata.token"] },
+});
+```
+
+Use runtime hooks for app-specific policies:
+
+```ts
+const events = new EventsClient({
+  redactors: [
+    async (event) => ({
+      ...event,
+      metadata: { ...event.metadata, internalOnly: undefined },
+    }),
+  ],
+});
+```
+
+## CLI
+
+The package exposes `events` and `hasna-events`.
+
+```bash
+events webhooks add https://example.com/webhooks/hasna \
+  --id ops \
+  --type "ticket.*" \
+  --secret "$HASNA_WEBHOOK_SECRET" \
+  --retry-attempts 3 \
+  --retry-backoff-ms 500
+
+events webhooks list
+events webhooks test ops
+events webhooks remove ops
+```
+
+Emit, list, and replay:
+
+```bash
+events events emit ticket.created \
+  --source tickets \
+  --subject ticket:123 \
+  --severity notice \
+  --message "Ticket created" \
+  --data '{"ticketId":123}'
+
+events events list --limit 20
+events events replay --type ticket.created
+events events replay --dry-run
+```
+
+Use `--json` for script-friendly output and `--dir <path>` for isolated data.
+
+## App Integration Pattern
+
+Apps should keep event emission near durable state changes and avoid hardcoding app-specific webhooks. The common pattern is:
+
+```ts
+import { EventsClient } from "@hasna/events";
+
+const events = new EventsClient();
+
+export async function recordDomainEvent() {
+  await events.emit({
+    source: "your-app",
+    type: "domain.object.changed",
+    subject: "object:123",
+    severity: "info",
+    data: { id: 123 },
+  });
+}
+```
+
+Local users and agents can configure channels once through the CLI, and every app using `@hasna/events` will share the same local channel config.
+
+## Development
+
+```bash
+bun test
+bun run typecheck
+bun run build
+```

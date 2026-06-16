@@ -1,0 +1,32 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Command } from "commander";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerEventsCommands } from "./commander.js";
+
+let dataDir = "";
+
+beforeEach(() => {
+  dataDir = mkdtempSync(join(tmpdir(), "hasna-events-commander-"));
+});
+
+afterEach(() => {
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+describe("commander adapter", () => {
+  test("registers app-scoped webhook and event commands", async () => {
+    const program = new Command();
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    await program.parseAsync(["node", "testapp", "webhooks", "add", "node", "--id", "cmd", "--transport", "command", "--arg", "-e", "--arg", "process.exit(0)"]);
+    await program.parseAsync(["node", "testapp", "events", "emit", "testapp.thing.created", "--no-deliver"]);
+    await program.parseAsync(["node", "testapp", "webhooks", "remove", "cmd"]);
+
+    expect(program.commands.map((command) => command.name())).toContain("webhooks");
+    expect(program.commands.map((command) => command.name())).toContain("events");
+  });
+});
