@@ -117,6 +117,48 @@ Environment:
   HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}`);
 }
 
+function printWebhooksHelp(): void {
+  console.log(`events webhooks
+
+Usage:
+  events [--dir <path>] [--json] webhooks add <url|command> [options]
+  events [--dir <path>] [--json] webhooks list
+  events [--dir <path>] [--json] webhooks remove <id>
+  events [--dir <path>] [--json] webhooks test <id>
+
+Options:
+  --id <id>                 Channel id for add
+  --type <pattern>          Event type filter, supports wildcards
+  --source <source>         Event source filter
+  --subject <subject>       Event subject filter
+  --severity <severity>     Event severity filter
+  --transport <kind>        webhook or command
+  --secret <secret>         Webhook signing secret
+  --header <name=value>     Webhook header, repeatable
+  --redact <path>           Redaction path, repeatable
+  --no-deliver              Available on events emit`);
+}
+
+function printEventsHelp(): void {
+  console.log(`events events
+
+Usage:
+  events [--dir <path>] [--json] events emit <type> --source <source> [options]
+  events [--dir <path>] [--json] events list [--limit <n>]
+  events [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+
+Options:
+  --source <source>         Event source
+  --subject <subject>       Event subject
+  --severity <severity>     Event severity
+  --message <message>       Human-readable event message
+  --dedupe-key <key>        Deduplicate repeated events
+  --data <json>             JSON object payload
+  --metadata <json>         JSON object metadata
+  --no-deliver              Record without delivering webhooks
+  --dry-run                 Preview replay matches without delivery`);
+}
+
 async function main(argv = process.argv.slice(2)): Promise<void> {
   const parsed = parseGlobalArgs(argv);
   const [group, command, ...tail] = parsed.rest;
@@ -133,10 +175,18 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
   const client = new EventsClient({ store });
 
   if (group === "webhooks") {
+    if (!command || command === "--help" || command === "-h") {
+      printWebhooksHelp();
+      return;
+    }
     await handleWebhooks(client, command, tail, parsed);
     return;
   }
   if (group === "events") {
+    if (!command || command === "--help" || command === "-h") {
+      printEventsHelp();
+      return;
+    }
     await handleEvents(client, command, tail, parsed);
     return;
   }

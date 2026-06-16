@@ -30,6 +30,20 @@ afterEach(() => {
 });
 
 describe("CLI smoke behavior", () => {
+  test("prints nested group help", async () => {
+    const webhooksHelp = await runCli(["webhooks", "--help"]);
+    expect(webhooksHelp.exitCode).toBe(0);
+    expect(webhooksHelp.stderr).toBe("");
+    expect(webhooksHelp.stdout).toContain("events webhooks");
+    expect(webhooksHelp.stdout).toContain("webhooks add");
+
+    const eventsHelp = await runCli(["events", "--help"]);
+    expect(eventsHelp.exitCode).toBe(0);
+    expect(eventsHelp.stderr).toBe("");
+    expect(eventsHelp.stdout).toContain("events events");
+    expect(eventsHelp.stdout).toContain("events emit");
+  });
+
   test("adds, lists, tests, removes webhooks and emits, lists, replays events", async () => {
     const requests: string[] = [];
     const server = Bun.serve({
