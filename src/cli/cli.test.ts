@@ -21,6 +21,26 @@ async function runCli(args: string[]) {
   return { stdout, stderr, exitCode };
 }
 
+async function runEmbeddedCli(args: string[]) {
+  const child = Bun.spawn({
+    cmd: [
+      "bun",
+      "-e",
+      `import { runEventsCli } from "./src/cli/index.ts"; await runEventsCli(["--dir", process.env.HASNA_EVENTS_DIR!, "--json", ...${JSON.stringify(args)}], { source: "embedded-test", programName: "embedded" });`,
+    ],
+    cwd: process.cwd(),
+    env: { ...process.env, HASNA_EVENTS_DIR: dataDir },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
 beforeEach(() => {
   dataDir = mkdtempSync(join(tmpdir(), "hasna-events-cli-"));
 });
@@ -42,6 +62,21 @@ describe("CLI smoke behavior", () => {
     expect(eventsHelp.stderr).toBe("");
     expect(eventsHelp.stdout).toContain("events events");
     expect(eventsHelp.stdout).toContain("events emit");
+  });
+
+  test("can be embedded with app name and default source", async () => {
+    const help = await runEmbeddedCli(["events", "--help"]);
+    expect(help.exitCode).toBe(0);
+    expect(help.stderr).toBe("");
+    expect(help.stdout).toContain("embedded events");
+    expect(help.stdout).toContain("default: embedded-test");
+
+    const emit = await runEmbeddedCli(["events", "emit", "embedded.created", "--no-deliver"]);
+    expect(emit.exitCode).toBe(0);
+    expect(JSON.parse(emit.stdout).event).toMatchObject({
+      source: "embedded-test",
+      type: "embedded.created",
+    });
   });
 
   test("adds, lists, tests, removes webhooks and emits, lists, replays events", async () => {

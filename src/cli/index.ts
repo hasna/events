@@ -10,6 +10,11 @@ interface ParsedArgs {
   rest: string[];
 }
 
+export interface RunEventsCliOptions {
+  programName?: string;
+  source?: string;
+}
+
 function version(): string {
   try {
     const packagePath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
@@ -101,30 +106,36 @@ function output(parsed: ParsedArgs, value: unknown, human: () => void): void {
   human();
 }
 
-function printHelp(): void {
-  console.log(`events ${version()}
+function commandName(options: RunEventsCliOptions): string {
+  return options.programName ?? "events";
+}
+
+function printHelp(options: RunEventsCliOptions = {}): void {
+  const name = commandName(options);
+  console.log(`${name} ${version()}
 
 Usage:
-  events [--dir <path>] [--json] webhooks add <url|command> [options]
-  events [--dir <path>] [--json] webhooks list
-  events [--dir <path>] [--json] webhooks remove <id>
-  events [--dir <path>] [--json] webhooks test <id>
-  events [--dir <path>] [--json] events emit <type> --source <source> [options]
-  events [--dir <path>] [--json] events list [--limit <n>]
-  events [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
+  ${name} [--dir <path>] [--json] webhooks list
+  ${name} [--dir <path>] [--json] webhooks remove <id>
+  ${name} [--dir <path>] [--json] webhooks test <id>
+  ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
+  ${name} [--dir <path>] [--json] events list [--limit <n>]
+  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
 
 Environment:
   HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}`);
 }
 
-function printWebhooksHelp(): void {
-  console.log(`events webhooks
+function printWebhooksHelp(options: RunEventsCliOptions = {}): void {
+  const name = commandName(options);
+  console.log(`${name} webhooks
 
 Usage:
-  events [--dir <path>] [--json] webhooks add <url|command> [options]
-  events [--dir <path>] [--json] webhooks list
-  events [--dir <path>] [--json] webhooks remove <id>
-  events [--dir <path>] [--json] webhooks test <id>
+  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
+  ${name} [--dir <path>] [--json] webhooks list
+  ${name} [--dir <path>] [--json] webhooks remove <id>
+  ${name} [--dir <path>] [--json] webhooks test <id>
 
 Options:
   --id <id>                 Channel id for add
@@ -139,16 +150,17 @@ Options:
   --no-deliver              Available on events emit`);
 }
 
-function printEventsHelp(): void {
-  console.log(`events events
+function printEventsHelp(options: RunEventsCliOptions = {}): void {
+  const name = commandName(options);
+  console.log(`${name} events
 
 Usage:
-  events [--dir <path>] [--json] events emit <type> --source <source> [options]
-  events [--dir <path>] [--json] events list [--limit <n>]
-  events [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+  ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
+  ${name} [--dir <path>] [--json] events list [--limit <n>]
+  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
 
 Options:
-  --source <source>         Event source
+  --source <source>         Event source${options.source ? ` (default: ${options.source})` : ""}
   --subject <subject>       Event subject
   --severity <severity>     Event severity
   --message <message>       Human-readable event message
@@ -159,11 +171,11 @@ Options:
   --dry-run                 Preview replay matches without delivery`);
 }
 
-async function main(argv = process.argv.slice(2)): Promise<void> {
+export async function runEventsCli(argv = process.argv.slice(2), options: RunEventsCliOptions = {}): Promise<void> {
   const parsed = parseGlobalArgs(argv);
   const [group, command, ...tail] = parsed.rest;
   if (!group || group === "--help" || group === "-h") {
-    printHelp();
+    printHelp(options);
     return;
   }
   if (group === "--version" || group === "-v") {
@@ -176,24 +188,24 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
 
   if (group === "webhooks") {
     if (!command || command === "--help" || command === "-h") {
-      printWebhooksHelp();
+      printWebhooksHelp(options);
       return;
     }
-    await handleWebhooks(client, command, tail, parsed);
+    await handleWebhooks(client, command, tail, parsed, options);
     return;
   }
   if (group === "events") {
     if (!command || command === "--help" || command === "-h") {
-      printEventsHelp();
+      printEventsHelp(options);
       return;
     }
-    await handleEvents(client, command, tail, parsed);
+    await handleEvents(client, command, tail, parsed, options);
     return;
   }
   throw new Error(`Unknown command group: ${group}`);
 }
 
-async function handleWebhooks(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs): Promise<void> {
+async function handleWebhooks(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs, options: RunEventsCliOptions): Promise<void> {
   if (command === "add") {
     const args = [...tail];
     const transport = (takeOption(args, "--transport") ?? "webhook") as TransportKind;
@@ -261,7 +273,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     const id = args.shift();
     if (!id) throw new Error("webhooks test requires a channel id");
     const result = await client.testChannel(id, {
-      source: takeOption(args, "--source") ?? "hasna.events",
+      source: takeOption(args, "--source") ?? options.source ?? "hasna.events",
       type: takeOption(args, "--type") ?? "events.test",
       subject: takeOption(args, "--subject") ?? id,
       data: parseJsonOption(takeOption(args, "--data"), { test: true }),
@@ -273,12 +285,12 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
   throw new Error(`Unknown webhooks command: ${command ?? ""}`);
 }
 
-async function handleEvents(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs): Promise<void> {
+async function handleEvents(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs, options: RunEventsCliOptions): Promise<void> {
   if (command === "emit") {
     const args = [...tail];
     const type = args.shift();
     if (!type) throw new Error("events emit requires an event type");
-    const source = takeOption(args, "--source");
+    const source = takeOption(args, "--source") ?? options.source;
     if (!source) throw new Error("events emit requires --source");
     const noDeliver = takeFlag(args, "--no-deliver");
     const result = await client.emit({
@@ -345,13 +357,15 @@ function severityOption(value: string | undefined) {
   return value as "debug" | "info" | "notice" | "warning" | "error" | "critical";
 }
 
-main().catch((error) => {
-  const parsed = parseGlobalArgs(process.argv.slice(2));
-  const message = error instanceof Error ? error.message : String(error);
-  if (parsed.json) {
-    console.log(JSON.stringify({ error: message }, null, 2));
-  } else {
-    console.error(message);
-  }
-  process.exit(1);
-});
+if (import.meta.main) {
+  runEventsCli().catch((error) => {
+    const parsed = parseGlobalArgs(process.argv.slice(2));
+    const message = error instanceof Error ? error.message : String(error);
+    if (parsed.json) {
+      console.log(JSON.stringify({ error: message }, null, 2));
+    } else {
+      console.error(message);
+    }
+    process.exit(1);
+  });
+}

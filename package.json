@@ -1,6 +1,6 @@
 {
   "name": "@hasna/events",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Shared event envelopes, local subscriptions, and webhook delivery for Hasna open-source apps",
   "type": "module",
   "main": "./dist/index.js",
@@ -33,6 +33,10 @@
     "./commander": {
       "types": "./dist/commander.d.ts",
       "import": "./dist/commander.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
     }
   },
   "files": [
