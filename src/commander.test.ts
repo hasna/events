@@ -29,4 +29,23 @@ describe("commander adapter", () => {
     expect(program.commands.map((command) => command.name())).toContain("webhooks");
     expect(program.commands.map((command) => command.name())).toContain("events");
   });
+
+  test("honors inherited parent json option", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const originalLog = console.log;
+    program.exitOverride();
+    program.option("-j, --json", "Output JSON");
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      await program.parseAsync(["node", "testapp", "-j", "events", "list"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(output).toEqual(["[]"]);
+  });
 });

@@ -59,6 +59,44 @@ function print(value: unknown, json: boolean, text: string): void {
   else console.log(text);
 }
 
+function hasJsonOption(options: {
+  json?: boolean;
+  opts?: () => { json?: boolean };
+  optsWithGlobals?: () => { json?: boolean };
+  parent?: {
+    opts?: () => { json?: boolean };
+    optsWithGlobals?: () => { json?: boolean };
+  };
+} | undefined): boolean {
+  return Boolean(
+    options?.json ||
+    options?.opts?.().json ||
+    options?.optsWithGlobals?.().json ||
+    options?.parent?.opts?.().json ||
+    options?.parent?.optsWithGlobals?.().json
+  );
+}
+
+function wantsJson(actionOptions: {
+  json?: boolean;
+  opts?: () => { json?: boolean };
+  optsWithGlobals?: () => { json?: boolean };
+  parent?: {
+    opts?: () => { json?: boolean };
+    optsWithGlobals?: () => { json?: boolean };
+  };
+}, command?: {
+  json?: boolean;
+  opts?: () => { json?: boolean };
+  optsWithGlobals?: () => { json?: boolean };
+  parent?: {
+    opts?: () => { json?: boolean };
+    optsWithGlobals?: () => { json?: boolean };
+  };
+}): boolean {
+  return hasJsonOption(actionOptions) || hasJsonOption(command);
+}
+
 export function registerWebhookCommands(program: CommanderLike, options: RegisterEventsCommandsOptions): CommanderCommandLike {
   const webhooks = program.command(options.webhooksCommandName ?? "webhooks").description("Manage Hasna event webhook subscriptions");
 
@@ -99,7 +137,7 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
       redact?: string[];
       disabled?: boolean;
       json?: boolean;
-    }) => {
+    }, command?: CommanderCommandLike) => {
       const timestamp = new Date().toISOString();
       const channel: ChannelConfig = {
         id: actionOptions.id,
@@ -122,12 +160,12 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
         throw new Error(`Transport ${actionOptions.transport} is reserved for future use and cannot be added yet`);
       }
       const saved = await createClient(options).addChannel(channel);
-      print(sanitizeChannelForOutput(saved), Boolean(actionOptions.json), `Added ${saved.transport} channel ${saved.id}`);
+      print(sanitizeChannelForOutput(saved), wantsJson(actionOptions, command), `Added ${saved.transport} channel ${saved.id}`);
     });
 
-  webhooks.command("list").description("List configured subscriptions").option("-j, --json", "Print JSON output", false).action(async (actionOptions: { json?: boolean }) => {
+  webhooks.command("list").description("List configured subscriptions").option("-j, --json", "Print JSON output", false).action(async (actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
     const channels = await createClient(options).listChannels();
-    if (actionOptions.json) {
+    if (wantsJson(actionOptions, command)) {
       console.log(JSON.stringify(sanitizeChannelsForOutput(channels), null, 2));
       return;
     }
@@ -140,9 +178,9 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
     }
   });
 
-  webhooks.command("remove").description("Remove a subscription").argument("<id>", "Subscription/channel identifier").option("-j, --json", "Print JSON output", false).action(async (id: string, actionOptions: { json?: boolean }) => {
+  webhooks.command("remove").description("Remove a subscription").argument("<id>", "Subscription/channel identifier").option("-j, --json", "Print JSON output", false).action(async (id: string, actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
     const removed = await createClient(options).removeChannel(id);
-    print({ removed }, Boolean(actionOptions.json), removed ? `Removed ${id}` : `Channel not found: ${id}`);
+    print({ removed }, wantsJson(actionOptions, command), removed ? `Removed ${id}` : `Channel not found: ${id}`);
   });
 
   webhooks
@@ -154,7 +192,7 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
     .option("--message <message>", "Event message", "Hasna events test delivery")
     .option("--data <json>", "Event data JSON object")
     .option("-j, --json", "Print JSON output", false)
-    .action(async (id: string, actionOptions: { type: string; subject?: string; message: string; data?: string; json?: boolean }) => {
+    .action(async (id: string, actionOptions: { type: string; subject?: string; message: string; data?: string; json?: boolean }, command?: CommanderCommandLike) => {
       const result = await createClient(options).testChannel(id, {
         source: options.source,
         type: actionOptions.type,
@@ -162,7 +200,7 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
         message: actionOptions.message,
         data: parseJsonObject(actionOptions.data, { test: true }),
       });
-      print(result, Boolean(actionOptions.json), `${result.status}: ${result.channelId}`);
+      print(result, wantsJson(actionOptions, command), `${result.status}: ${result.channelId}`);
     });
 
   return webhooks;
@@ -196,7 +234,7 @@ export function registerEventCommands(program: CommanderLike, options: RegisterE
       deliver?: boolean;
       dedupe?: boolean;
       json?: boolean;
-    }) => {
+    }, command?: CommanderCommandLike) => {
       const result = await createClient(options).emit({
         source: actionOptions.source ?? options.source,
         type,
@@ -207,15 +245,15 @@ export function registerEventCommands(program: CommanderLike, options: RegisterE
         data: parseJsonObject(actionOptions.data, {}),
         metadata: parseJsonObject(actionOptions.metadata, {}),
       }, { deliver: actionOptions.deliver, dedupe: actionOptions.dedupe });
-      print(result, Boolean(actionOptions.json), `${result.deduped ? "Deduped" : "Emitted"} ${result.event.id} to ${result.deliveries.length} channel(s)`);
+      print(result, wantsJson(actionOptions, command), `${result.deduped ? "Deduped" : "Emitted"} ${result.event.id} to ${result.deliveries.length} channel(s)`);
     });
 
-  events.command("list").description("List recorded events").option("--source <source>", "Filter by source").option("--type <type>", "Filter by type").option("--limit <n>", "Limit results", parseNumber).option("-j, --json", "Print JSON output", false).action(async (actionOptions: { source?: string; type?: string; limit?: number; json?: boolean }) => {
+  events.command("list").description("List recorded events").option("--source <source>", "Filter by source").option("--type <type>", "Filter by type").option("--limit <n>", "Limit results", parseNumber).option("-j, --json", "Print JSON output", false).action(async (actionOptions: { source?: string; type?: string; limit?: number; json?: boolean }, command?: CommanderCommandLike) => {
     let rows = await createClient(options).listEvents();
     if (actionOptions.source) rows = rows.filter((event) => event.source === actionOptions.source);
     if (actionOptions.type) rows = rows.filter((event) => event.type === actionOptions.type);
     if (actionOptions.limit) rows = rows.slice(-actionOptions.limit);
-    if (actionOptions.json) {
+    if (wantsJson(actionOptions, command)) {
       console.log(JSON.stringify(rows, null, 2));
       return;
     }
@@ -226,14 +264,14 @@ export function registerEventCommands(program: CommanderLike, options: RegisterE
     for (const event of rows) console.log(`${event.time}\t${event.id}\t${event.source}\t${event.type}\t${event.severity}`);
   });
 
-  events.command("replay").description("Replay recorded events").option("--id <id>", "Replay one event id").option("--source <source>", "Filter by source").option("--type <type>", "Filter by type").option("--dry-run", "Preview without delivery", false).option("-j, --json", "Print JSON output", false).action(async (actionOptions: { id?: string; source?: string; type?: string; dryRun?: boolean; json?: boolean }) => {
+  events.command("replay").description("Replay recorded events").option("--id <id>", "Replay one event id").option("--source <source>", "Filter by source").option("--type <type>", "Filter by type").option("--dry-run", "Preview without delivery", false).option("-j, --json", "Print JSON output", false).action(async (actionOptions: { id?: string; source?: string; type?: string; dryRun?: boolean; json?: boolean }, command?: CommanderCommandLike) => {
     const result = await createClient(options).replay({
       eventId: actionOptions.id,
       source: actionOptions.source,
       type: actionOptions.type,
       dryRun: actionOptions.dryRun,
     });
-    print(result, Boolean(actionOptions.json), `Replayed ${result.events.length} event(s), ${result.deliveries.length} delivery result(s)`);
+    print(result, wantsJson(actionOptions, command), `Replayed ${result.events.length} event(s), ${result.deliveries.length} delivery result(s)`);
   });
 
   return events;
