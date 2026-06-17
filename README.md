@@ -219,6 +219,16 @@ events events replay --type ticket.created
 events events replay --dry-run
 ```
 
+Machine-readable status:
+
+```bash
+events status --json
+```
+
+The status contract reports event, channel, delivery, file, and transport counts
+only. It does not include event payloads, webhook signing secrets, command
+environment values, or channel targets.
+
 Use `--json` for script-friendly output and `--dir <path>` for isolated data.
 
 ## App Integration Pattern

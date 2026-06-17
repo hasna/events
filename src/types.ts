@@ -138,3 +138,33 @@ export interface EmitResult<TData extends EventData = EventData> {
   deliveries: DeliveryResult[];
   deduped: boolean;
 }
+
+export interface EventsStatus {
+  service: "events";
+  schemaVersion: "1.0";
+  dataDir: string;
+  env: {
+    primary: "HASNA_EVENTS_DIR";
+    fallback: "HASNA_EVENTS_HOME";
+    active: "HASNA_EVENTS_DIR" | "HASNA_EVENTS_HOME" | null;
+  };
+  files: {
+    channels: { path: string; exists: boolean; records: number };
+    events: { path: string; exists: boolean; records: number };
+    deliveries: { path: string; exists: boolean; records: number };
+  };
+  counts: {
+    channels: number;
+    enabledChannels: number;
+    disabledChannels: number;
+    events: number;
+    deliveries: number;
+  };
+  transports: Record<string, number>;
+  safety: {
+    includesEventPayloads: false;
+    includesWebhookSecrets: false;
+    listOutputsRedactSecrets: true;
+    statusOutputIsMetadataOnly: true;
+  };
+}

@@ -150,6 +150,45 @@ describe("CLI smoke behavior", () => {
     }
   });
 
+  test("status reports metadata only without event payloads or webhook secrets", async () => {
+    const add = await runCli(["webhooks", "add", "https://example.com/hook", "--id", "ops", "--secret", "top-secret-value"]);
+    expect(add.exitCode).toBe(0);
+
+    const emit = await runCli([
+      "events",
+      "emit",
+      "fleet.status",
+      "--source",
+      "cli-test",
+      "--data",
+      "{\"token\":\"raw-token-value\"}",
+      "--no-deliver",
+    ]);
+    expect(emit.exitCode).toBe(0);
+
+    const statusResult = await runCli(["status"]);
+    expect(statusResult.exitCode).toBe(0);
+    const status = JSON.parse(statusResult.stdout);
+    expect(status).toMatchObject({
+      service: "events",
+      schemaVersion: "1.0",
+      counts: {
+        channels: 1,
+        enabledChannels: 1,
+        events: 1,
+        deliveries: 0,
+      },
+      safety: {
+        includesEventPayloads: false,
+        includesWebhookSecrets: false,
+        statusOutputIsMetadataOnly: true,
+      },
+    });
+    expect(status.files.events.records).toBe(1);
+    expect(JSON.stringify(status)).not.toContain("top-secret-value");
+    expect(JSON.stringify(status)).not.toContain("raw-token-value");
+  });
+
   test("uses command transport --arg values without forwarding --arg to the process", async () => {
     const receiverPath = join(dataDir, "receiver.js");
     const outputPath = join(dataDir, "received.jsonl");

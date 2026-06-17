@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { EventsClient, JsonEventsStore, getEventsDataDir, sanitizeChannelForOutput, sanitizeChannelsForOutput, type ChannelConfig, type EventFilter, type TransportKind } from "../index.js";
+import { EventsClient, JsonEventsStore, getEventsDataDir, getEventsStatus, sanitizeChannelForOutput, sanitizeChannelsForOutput, type ChannelConfig, type EventFilter, type TransportKind } from "../index.js";
 
 interface ParsedArgs {
   json: boolean;
@@ -128,6 +128,7 @@ Usage:
   ${name} [--dir <path>] [--json] webhooks list
   ${name} [--dir <path>] [--json] webhooks remove <id>
   ${name} [--dir <path>] [--json] webhooks test <id>
+  ${name} [--dir <path>] [--json] status
   ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
   ${name} [--dir <path>] [--json] events list [--limit <n>]
   ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
@@ -189,6 +190,15 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
   }
   if (group === "--version" || group === "-v") {
     console.log(version());
+    return;
+  }
+
+  if (group === "status") {
+    const status = await getEventsStatus(parsed.dir);
+    output(parsed, status, () => {
+      console.log(`events ${status.counts.events} event(s), ${status.counts.channels} channel(s), ${status.counts.deliveries} delivery record(s)`);
+      console.log(`dataDir: ${status.dataDir}`);
+    });
     return;
   }
 

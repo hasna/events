@@ -2,13 +2,19 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ChannelConfig, DeliveryResult, EventEnvelope, StoredEventsData } from "./types.js";
+import type { ChannelConfig, DeliveryResult, EventEnvelope, EventsStatus, StoredEventsData } from "./types.js";
 
 export const HASNA_EVENTS_DIR_ENV = "HASNA_EVENTS_DIR";
 export const HASNA_EVENTS_HOME_ENV = "HASNA_EVENTS_HOME";
 
 export function getEventsDataDir(override?: string): string {
   return override || process.env[HASNA_EVENTS_DIR_ENV] || process.env[HASNA_EVENTS_HOME_ENV] || join(homedir(), ".hasna", "events");
+}
+
+export function getActiveEventsDirEnv(): EventsStatus["env"]["active"] {
+  if (process.env[HASNA_EVENTS_DIR_ENV]) return HASNA_EVENTS_DIR_ENV;
+  if (process.env[HASNA_EVENTS_HOME_ENV]) return HASNA_EVENTS_HOME_ENV;
+  return null;
 }
 
 export interface EventsStore {
@@ -143,4 +149,53 @@ export class JsonEventsStore implements EventsStore {
     await rename(tempPath, path);
     await chmod(path, 0o600).catch(() => undefined);
   }
+}
+
+export async function getEventsStatus(dataDir?: string): Promise<EventsStatus> {
+  const store = new JsonEventsStore(dataDir);
+  await store.init();
+  const [channels, events, deliveries] = await Promise.all([
+    store.listChannels(),
+    store.listEvents(),
+    store.listDeliveries(),
+  ]);
+  const transports = channels.reduce<Record<string, number>>((counts, channel) => {
+    counts[channel.transport] = (counts[channel.transport] ?? 0) + 1;
+    return counts;
+  }, {});
+
+  return {
+    service: "events",
+    schemaVersion: "1.0",
+    dataDir: store.dataDir,
+    env: {
+      primary: HASNA_EVENTS_DIR_ENV,
+      fallback: HASNA_EVENTS_HOME_ENV,
+      active: getActiveEventsDirEnv(),
+    },
+    files: {
+      channels: statusFile(store.dataDir, "channels.json", channels.length),
+      events: statusFile(store.dataDir, "events.json", events.length),
+      deliveries: statusFile(store.dataDir, "deliveries.json", deliveries.length),
+    },
+    counts: {
+      channels: channels.length,
+      enabledChannels: channels.filter((channel) => channel.enabled).length,
+      disabledChannels: channels.filter((channel) => !channel.enabled).length,
+      events: events.length,
+      deliveries: deliveries.length,
+    },
+    transports,
+    safety: {
+      includesEventPayloads: false,
+      includesWebhookSecrets: false,
+      listOutputsRedactSecrets: true,
+      statusOutputIsMetadataOnly: true,
+    },
+  };
+}
+
+function statusFile(dataDir: string, fileName: string, records: number): EventsStatus["files"][keyof EventsStatus["files"]] {
+  const path = join(dataDir, fileName);
+  return { path, exists: existsSync(path), records };
 }
