@@ -21,6 +21,22 @@ async function runCli(args: string[]) {
   return { stdout, stderr, exitCode };
 }
 
+async function runHumanCli(args: string[]) {
+  const child = Bun.spawn({
+    cmd: ["bun", "run", "src/cli/index.ts", "--dir", dataDir, ...args],
+    cwd: process.cwd(),
+    env: { ...process.env, HASNA_EVENTS_DIR: dataDir },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
 async function runEmbeddedCli(args: string[]) {
   const child = Bun.spawn({
     cmd: [
@@ -148,6 +164,95 @@ describe("CLI smoke behavior", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  test("keeps default human event lists compact and exposes detail paths", async () => {
+    const longPayload = "payload-text-".repeat(80);
+    const longMessage = "message-text-".repeat(30);
+
+    let firstEventId = "";
+    const eventIds: string[] = [];
+    for (let index = 0; index < 25; index += 1) {
+      const emit = await runCli([
+        "events",
+        "emit",
+        `demo.${index}`,
+        "--source",
+        "cli-test",
+        "--message",
+        `${longMessage}${index}`,
+        "--data",
+        JSON.stringify({ index, payload: longPayload }),
+        "--no-deliver",
+      ]);
+      expect(emit.exitCode).toBe(0);
+      const eventId = JSON.parse(emit.stdout).event.id;
+      eventIds.push(eventId);
+      if (index === 0) firstEventId = eventId;
+    }
+
+    const compact = await runHumanCli(["events", "list"]);
+    expect(compact.exitCode).toBe(0);
+    expect(compact.stderr).toBe("");
+    expect(compact.stdout).toContain("Showing 20 of 25.");
+    expect(compact.stdout).toContain(`--cursor ${eventIds[5]} for older rows`);
+    expect(compact.stdout).toContain("events show <id>");
+    expect(compact.stdout).not.toContain(longPayload);
+    expect(compact.stdout).not.toContain(longMessage);
+    expect(compact.stdout.split("\n").filter((line) => line.includes("demo.")).length).toBe(20);
+
+    const olderPage = await runHumanCli(["events", "list", "--cursor", eventIds[5]]);
+    expect(olderPage.exitCode).toBe(0);
+    expect(olderPage.stdout).toContain("Showing 5 of 25.");
+    expect(olderPage.stdout).toContain("20 newer omitted.");
+    expect(olderPage.stdout).toContain("demo.0");
+    expect(olderPage.stdout).not.toContain("demo.5");
+    expect(olderPage.stdout).not.toContain(longPayload);
+
+    const verbose = await runHumanCli(["--verbose", "events", "list", "--limit", "1"]);
+    expect(verbose.exitCode).toBe(0);
+    expect(verbose.stdout).toContain("MESSAGE");
+    expect(verbose.stdout).toContain("message-text-message-text-message-text");
+    expect(verbose.stdout).not.toContain(longMessage);
+
+    const detail = await runHumanCli(["events", "show", firstEventId]);
+    expect(detail.exitCode).toBe(0);
+    expect(detail.stdout).toContain(longPayload);
+
+    const machine = await runCli(["events", "list"]);
+    expect(machine.exitCode).toBe(0);
+    const rows = JSON.parse(machine.stdout);
+    expect(rows).toHaveLength(25);
+    expect(rows[0].data.payload).toBe(longPayload);
+  });
+
+  test("keeps default human webhook lists capped and sanitized", async () => {
+    const longUrl = `https://example.com/${"very-long-path-".repeat(12)}`;
+    for (let index = 0; index < 21; index += 1) {
+      const add = await runCli([
+        "webhooks",
+        "add",
+        `${longUrl}${index}`,
+        "--id",
+        `hook-${index}`,
+        "--secret",
+        `secret-${index}`,
+      ]);
+      expect(add.exitCode).toBe(0);
+    }
+
+    const compact = await runHumanCli(["webhooks", "list"]);
+    expect(compact.exitCode).toBe(0);
+    expect(compact.stdout).toContain("Showing 20 of 21.");
+    expect(compact.stdout).toContain("webhooks show <id>");
+    expect(compact.stdout).not.toContain("secret-");
+    expect(compact.stdout).toContain("...");
+    expect(compact.stdout.split("\n").filter((line) => line.includes("hook-")).length).toBe(20);
+
+    const detail = await runHumanCli(["webhooks", "show", "hook-0"]);
+    expect(detail.exitCode).toBe(0);
+    expect(detail.stdout).toContain("[REDACTED]");
+    expect(detail.stdout).toContain(longUrl);
   });
 
   test("status reports metadata only without event payloads or webhook secrets", async () => {

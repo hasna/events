@@ -200,6 +200,7 @@ events webhooks add https://example.com/webhooks/hasna \
   --retry-backoff-ms 500
 
 events webhooks list
+events webhooks show ops
 events webhooks test ops
 events webhooks remove ops
 ```
@@ -215,9 +216,20 @@ events events emit ticket.created \
   --data '{"ticketId":123}'
 
 events events list --limit 20
+events events list --verbose
+events events show <event-id>
 events events replay --type ticket.created
 events events replay --dry-run
 ```
+
+Human CLI output is compact by default. List commands show concise tables,
+truncate long fields, and cap default output at 20 rows so agent terminals do
+not fill with local records. Use `--limit <n>` for a larger page, `--verbose`
+for extra compact columns, `show`/`inspect <id>` for one full record, and
+`--json` for machine-readable output. JSON keeps full records unless you
+explicitly combine it with filters, `--limit`, or `--cursor` to request a page.
+For event history pagination, use the hinted `--cursor <event-id>` value to
+fetch older rows without increasing the page size.
 
 Machine-readable status:
 
@@ -229,7 +241,8 @@ The status contract reports event, channel, delivery, file, and transport counts
 only. It does not include event payloads, webhook signing secrets, command
 environment values, or channel targets.
 
-Use `--json` for script-friendly output and `--dir <path>` for isolated data.
+Use `events status --verbose` for file and transport details, `--json` for
+script-friendly output, and `--dir <path>` for isolated data.
 
 ## App Integration Pattern
 

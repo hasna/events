@@ -3,9 +3,22 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventsClient, JsonEventsStore, getEventsDataDir, getEventsStatus, sanitizeChannelForOutput, sanitizeChannelsForOutput, type ChannelConfig, type EventFilter, type TransportKind } from "../index.js";
+import {
+  DEFAULT_LIST_LIMIT,
+  formatChannelsTable,
+  formatDeliveriesTable,
+  formatEventsTable,
+  formatListHint,
+  formatSummaryHint,
+  pageFromStart,
+  parsePositiveInteger,
+  recentPage,
+  resolveHumanLimit,
+} from "./output.js";
 
 interface ParsedArgs {
   json: boolean;
+  verbose: boolean;
   dir?: string;
   rest: string[];
 }
@@ -27,18 +40,21 @@ function version(): string {
 function parseGlobalArgs(argv: string[]): ParsedArgs {
   const rest: string[] = [];
   let json = false;
+  let verbose = false;
   let dir: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--json" || arg === "-j") {
       json = true;
+    } else if (arg === "--verbose") {
+      verbose = true;
     } else if (arg === "--dir") {
       dir = argv[++index];
     } else {
       rest.push(arg);
     }
   }
-  return { json, dir, rest };
+  return { json, verbose, dir, rest };
 }
 
 function takeOption(args: string[], name: string): string | undefined {
@@ -124,17 +140,24 @@ function printHelp(options: RunEventsCliOptions = {}): void {
   console.log(`${name} ${version()}
 
 Usage:
-  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
-  ${name} [--dir <path>] [--json] webhooks list
+  ${name} [--dir <path>] [--json] [--verbose] webhooks add <url|command> [options]
+  ${name} [--dir <path>] [--json] [--verbose] webhooks list [--limit <n>]
+  ${name} [--dir <path>] [--json] webhooks show <id>
   ${name} [--dir <path>] [--json] webhooks remove <id>
-  ${name} [--dir <path>] [--json] webhooks test <id>
-  ${name} [--dir <path>] [--json] status
-  ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
-  ${name} [--dir <path>] [--json] events list [--limit <n>]
-  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+  ${name} [--dir <path>] [--json] [--verbose] webhooks test <id>
+  ${name} [--dir <path>] [--json] [--verbose] status
+  ${name} [--dir <path>] [--json] [--verbose] events emit <type>${options.source ? "" : " --source <source>"} [options]
+  ${name} [--dir <path>] [--json] [--verbose] events list [--limit <n>] [--cursor <event-id>]
+  ${name} [--dir <path>] [--json] events show <id>
+  ${name} [--dir <path>] [--json] [--verbose] events replay [--id <event-id>] [--dry-run]
 
 Environment:
-  HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}`);
+  HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}
+
+Output:
+  Human list output is compact by default and capped at ${DEFAULT_LIST_LIMIT} rows.
+  Use --verbose or show/inspect <id> for details. Use --json for machine-readable records.
+  Explicit --limit and supported --cursor flags select the requested page for both human and JSON output.`);
 }
 
 function printWebhooksHelp(options: RunEventsCliOptions = {}): void {
@@ -142,10 +165,11 @@ function printWebhooksHelp(options: RunEventsCliOptions = {}): void {
   console.log(`${name} webhooks
 
 Usage:
-  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
-  ${name} [--dir <path>] [--json] webhooks list
+  ${name} [--dir <path>] [--json] [--verbose] webhooks add <url|command> [options]
+  ${name} [--dir <path>] [--json] [--verbose] webhooks list [--limit <n>]
+  ${name} [--dir <path>] [--json] webhooks show <id>
   ${name} [--dir <path>] [--json] webhooks remove <id>
-  ${name} [--dir <path>] [--json] webhooks test <id>
+  ${name} [--dir <path>] [--json] [--verbose] webhooks test <id>
 
 Options:
   --id <id>                 Channel id for add
@@ -157,7 +181,10 @@ Options:
   --secret <secret>         Webhook signing secret
   --header <name=value>     Webhook header, repeatable
   --redact <path>           Redaction path, repeatable
-  --no-deliver              Available on events emit`);
+  --no-deliver              Available on events emit
+  --limit <n>               Limit list rows (human default: ${DEFAULT_LIST_LIMIT})
+  --verbose                 Show extra compact columns
+  --json                    Print full sanitized records`);
 }
 
 function printEventsHelp(options: RunEventsCliOptions = {}): void {
@@ -165,9 +192,10 @@ function printEventsHelp(options: RunEventsCliOptions = {}): void {
   console.log(`${name} events
 
 Usage:
-  ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
-  ${name} [--dir <path>] [--json] events list [--limit <n>]
-  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+  ${name} [--dir <path>] [--json] [--verbose] events emit <type>${options.source ? "" : " --source <source>"} [options]
+  ${name} [--dir <path>] [--json] [--verbose] events list [--limit <n>] [--cursor <event-id>]
+  ${name} [--dir <path>] [--json] events show <id>
+  ${name} [--dir <path>] [--json] [--verbose] events replay [--id <event-id>] [--dry-run]
 
 Options:
   --source <source>         Event source${options.source ? ` (default: ${options.source})` : ""}
@@ -178,7 +206,11 @@ Options:
   --data <json>             JSON object payload
   --metadata <json>         JSON object metadata
   --no-deliver              Record without delivering webhooks
-  --dry-run                 Preview replay matches without delivery`);
+  --dry-run                 Preview replay matches without delivery
+  --limit <n>               Limit list/verbose preview rows (human default: ${DEFAULT_LIST_LIMIT})
+  --cursor <event-id>       Show older events before this event id
+  --verbose                 Show extra compact columns
+  --json                    Print machine-readable records, honoring explicit filters and pages`);
 }
 
 export async function runEventsCli(argv = process.argv.slice(2), options: RunEventsCliOptions = {}): Promise<void> {
@@ -198,6 +230,14 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
     output(parsed, status, () => {
       console.log(`events ${status.counts.events} event(s), ${status.counts.channels} channel(s), ${status.counts.deliveries} delivery record(s)`);
       console.log(`dataDir: ${status.dataDir}`);
+      if (parsed.verbose) {
+        console.log(`channels: ${status.files.channels.path} (${status.files.channels.records})`);
+        console.log(`events: ${status.files.events.path} (${status.files.events.records})`);
+        console.log(`deliveries: ${status.files.deliveries.path} (${status.files.deliveries.records})`);
+        console.log(`transports: ${Object.entries(status.transports).map(([transport, count]) => `${transport}=${count}`).join(", ") || "none"}`);
+      } else {
+        console.log(`Use --verbose or ${commandName(options)} status --json for details.`);
+      }
     });
     return;
   }
@@ -274,17 +314,30 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
   }
 
   if (command === "list") {
+    const args = [...tail];
+    const explicitLimit = takeOption(args, "--limit");
+    const limit = resolveHumanLimit(explicitLimit);
     const channels = await client.listChannels();
-    output(parsed, sanitizeChannelsForOutput(channels), () => {
-      if (channels.length === 0) {
+    const sanitizedChannels = sanitizeChannelsForOutput(channels);
+    const humanPage = pageFromStart(sanitizedChannels, limit);
+    output(parsed, explicitLimit ? sanitizedChannels.slice(0, parsePositiveInteger(explicitLimit, "--limit")) : sanitizedChannels, () => {
+      if (sanitizedChannels.length === 0) {
         console.log("No channels configured.");
         return;
       }
-      for (const channel of channels) {
-        const target = channel.webhook?.url ?? channel.command?.command ?? channel.transport;
-        console.log(`${channel.id}\t${channel.enabled ? "enabled" : "disabled"}\t${channel.transport}\t${target}`);
-      }
+      console.log(formatChannelsTable(humanPage.rows, parsed.verbose));
+      console.log(formatListHint(`${commandName(options)} webhooks list`, humanPage, `${commandName(options)} webhooks show <id>`));
     });
+    return;
+  }
+
+  if (command === "show" || command === "inspect") {
+    const id = tail[0];
+    if (!id) throw new Error(`webhooks ${command} requires a channel id`);
+    const channel = (await client.listChannels()).find((item) => item.id === id);
+    if (!channel) throw new Error(`Channel not found: ${id}`);
+    const sanitized = sanitizeChannelForOutput(channel);
+    output(parsed, sanitized, () => console.log(JSON.stringify(sanitized, null, 2)));
     return;
   }
 
@@ -306,7 +359,11 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
       subject: takeOption(args, "--subject") ?? id,
       data: parseJsonOption(takeOption(args, "--data"), { test: true }),
     });
-    output(parsed, result, () => console.log(`${result.status}: ${result.channelId}`));
+    output(parsed, result, () => {
+      console.log(`${result.status}: ${result.channelId}`);
+      if (parsed.verbose) console.log(formatDeliveriesTable([result]));
+      else console.log(formatSummaryHint(`${commandName(options)} webhooks test ${id}`, `${commandName(options)} webhooks show ${id}`));
+    });
     return;
   }
 
@@ -337,34 +394,76 @@ async function handleEvents(client: EventsClient, command: string | undefined, t
 
   if (command === "list") {
     const args = [...tail];
-    const limit = numberOption(takeOption(args, "--limit"));
+    const explicitLimit = takeOption(args, "--limit");
+    const limit = resolveHumanLimit(explicitLimit);
+    const cursor = takeOption(args, "--cursor");
     const type = takeOption(args, "--type");
     const source = takeOption(args, "--source");
     let events = await client.listEvents();
     if (type) events = events.filter((event) => event.type === type);
     if (source) events = events.filter((event) => event.source === source);
-    if (limit) events = events.slice(-limit);
-    output(parsed, events, () => {
+    const jsonEvents = (() => {
+      if (cursor) return recentPage(events, limit, cursor).rows;
+      if (explicitLimit) return events.slice(-limit);
+      return events;
+    })();
+    const humanPage = recentPage(events, limit, cursor);
+    output(parsed, jsonEvents, () => {
       if (events.length === 0) {
         console.log("No events recorded.");
         return;
       }
-      for (const event of events) {
-        console.log(`${event.time}\t${event.id}\t${event.source}\t${event.type}\t${event.severity}`);
+      if (humanPage.rows.length === 0) {
+        console.log("No events on this page.");
+        console.log(formatListHint(`${commandName(options)} events list`, humanPage, `${commandName(options)} events show <id>`, {
+          afterLabel: "newer",
+          cursorLabel: "for older rows",
+        }));
+        return;
       }
+      console.log(formatEventsTable(humanPage.rows, parsed.verbose));
+      console.log(formatListHint(`${commandName(options)} events list`, humanPage, `${commandName(options)} events show <id>`, {
+        afterLabel: "newer",
+        cursorLabel: "for older rows",
+      }));
     });
+    return;
+  }
+
+  if (command === "show" || command === "inspect") {
+    const id = tail[0];
+    if (!id) throw new Error(`events ${command} requires an event id`);
+    const event = (await client.listEvents()).find((item) => item.id === id);
+    if (!event) throw new Error(`Event not found: ${id}`);
+    output(parsed, event, () => console.log(JSON.stringify(event, null, 2)));
     return;
   }
 
   if (command === "replay") {
     const args = [...tail];
+    const limit = resolveHumanLimit(takeOption(args, "--limit"));
     const result = await client.replay({
       eventId: takeOption(args, "--id"),
       source: takeOption(args, "--source"),
       type: takeOption(args, "--type"),
       dryRun: takeFlag(args, "--dry-run"),
     });
-    output(parsed, result, () => console.log(`Replayed ${result.events.length} event(s), ${result.deliveries.length} delivery result(s)`));
+    output(parsed, result, () => {
+      console.log(`Replayed ${result.events.length} event(s), ${result.deliveries.length} delivery result(s)`);
+      if (parsed.verbose) {
+        const eventPage = { ...recentPage(result.events, limit), nextCursor: undefined };
+        if (eventPage.rows.length > 0) {
+          console.log(formatEventsTable(eventPage.rows, true));
+          console.log(formatListHint(`${commandName(options)} events replay`, eventPage, `${commandName(options)} events show <id>`));
+        }
+        const deliveryPage = { ...recentPage(result.deliveries, limit), nextCursor: undefined };
+        if (deliveryPage.rows.length > 0) {
+          console.log(formatDeliveriesTable(deliveryPage.rows));
+        }
+      } else {
+        console.log(formatSummaryHint(`${commandName(options)} events replay`, `${commandName(options)} events show <id>`));
+      }
+    });
     return;
   }
 
