@@ -23,6 +23,45 @@ describe("event filtering", () => {
     })).toBe(true);
   });
 
+  test("keeps legacy * wildcard behavior outside path fields", () => {
+    const slashyEvent = createEvent({
+      source: "github/repos",
+      type: "task.created",
+      subject: "repo/open-events",
+      data: {},
+    });
+
+    expect(eventMatchesFilter(slashyEvent, {
+      source: "github/*",
+      subject: "repo/*",
+    })).toBe(true);
+  });
+
+  test("treats * as a path segment wildcard and ** as recursive for path fields", () => {
+    const repoEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: {},
+      metadata: { project_path: "/home/hasna/workspace/hasna/opensource/open-events" },
+    });
+    const worktreeEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: {},
+      metadata: { project_path: "/home/hasna/workspace/hasna/opensource/open-codewith/.codewith/worktrees/macos" },
+    });
+
+    expect(eventMatchesFilter(repoEvent, {
+      metadata: { project_path: "/home/hasna/workspace/hasna/opensource/*" },
+    })).toBe(true);
+    expect(eventMatchesFilter(worktreeEvent, {
+      metadata: { project_path: "/home/hasna/workspace/hasna/opensource/*" },
+    })).toBe(false);
+    expect(eventMatchesFilter(worktreeEvent, {
+      metadata: { project_path: "/home/hasna/workspace/hasna/opensource/**" },
+    })).toBe(true);
+  });
+
   test("rejects disabled channels before filters", () => {
     const channel: ChannelConfig = {
       id: "disabled",

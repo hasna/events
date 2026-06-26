@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventsClient, JsonEventsStore, getEventsDataDir, getEventsStatus, sanitizeChannelForOutput, sanitizeChannelsForOutput, type ChannelConfig, type EventFilter, type TransportKind } from "../index.js";
+import { parseFilterOptions } from "../filter-options.js";
 
 interface ParsedArgs {
   json: boolean;
@@ -84,16 +85,16 @@ function parseJsonOption(value: string | undefined, fallback: Record<string, unk
 }
 
 function parseFilter(args: string[]): EventFilter[] | undefined {
-  const filter: EventFilter = {};
-  const type = takeOption(args, "--type") ?? takeOption(args, "--event-type");
-  const source = takeOption(args, "--source");
-  const subject = takeOption(args, "--subject");
-  const severity = takeOption(args, "--severity");
-  if (type) filter.type = type;
-  if (source) filter.source = source;
-  if (subject) filter.subject = subject;
-  if (severity) filter.severity = severity;
-  return Object.keys(filter).length > 0 ? [filter] : undefined;
+  return parseFilterOptions({
+    type: takeOption(args, "--type") ?? takeOption(args, "--event-type"),
+    source: takeOption(args, "--source"),
+    subject: takeOption(args, "--subject"),
+    severity: takeOption(args, "--severity"),
+    data: takeMany(args, "--data"),
+    metadata: takeMany(args, "--metadata"),
+    dataJson: takeMany(args, "--data-json"),
+    metadataJson: takeMany(args, "--metadata-json"),
+  });
 }
 
 function parseHeaders(values: string[]): Record<string, string> | undefined {
@@ -128,6 +129,8 @@ Usage:
   ${name} [--dir <path>] [--json] webhooks list
   ${name} [--dir <path>] [--json] webhooks remove <id>
   ${name} [--dir <path>] [--json] webhooks test <id>
+  ${name} [--dir <path>] [--json] webhooks match <id>
+  ${name} [--dir <path>] [--json] webhooks status
   ${name} [--dir <path>] [--json] status
   ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
   ${name} [--dir <path>] [--json] events list [--limit <n>]
@@ -146,6 +149,8 @@ Usage:
   ${name} [--dir <path>] [--json] webhooks list
   ${name} [--dir <path>] [--json] webhooks remove <id>
   ${name} [--dir <path>] [--json] webhooks test <id>
+  ${name} [--dir <path>] [--json] webhooks match <id>
+  ${name} [--dir <path>] [--json] webhooks status
 
 Options:
   --id <id>                 Channel id for add
@@ -153,6 +158,11 @@ Options:
   --source <source>         Event source filter
   --subject <subject>       Event subject filter
   --severity <severity>     Event severity filter
+  --data <path=value>       Event data field filter, repeatable; string values, dot paths, * segment wildcard, ** recursive wildcard
+  --metadata <path=value>   Event metadata field filter, repeatable; string values, dot paths, * segment wildcard, ** recursive wildcard
+  --data-json <path=json>   Event data field filter with typed JSON value
+  --metadata-json <path=json> Event metadata field filter with typed JSON value
+  --honor-filters           On webhooks test, skip delivery when the sample event does not match filters
   --transport <kind>        webhook or command
   --secret <secret>         Webhook signing secret
   --header <name=value>     Webhook header, repeatable
@@ -288,6 +298,15 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     return;
   }
 
+  if (command === "status") {
+    const status = await getEventsStatus(parsed.dir);
+    output(parsed, status, () => {
+      console.log(`events dataDir: ${status.dataDir}`);
+      console.log(`${status.counts.enabledChannels}/${status.counts.channels} channel(s) enabled`);
+    });
+    return;
+  }
+
   if (command === "remove") {
     const id = tail[0];
     if (!id) throw new Error("webhooks remove requires a channel id");
@@ -300,13 +319,32 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     const args = [...tail];
     const id = args.shift();
     if (!id) throw new Error("webhooks test requires a channel id");
+    const honorFilters = takeFlag(args, "--honor-filters");
     const result = await client.testChannel(id, {
       source: takeOption(args, "--source") ?? options.source ?? "hasna.events",
       type: takeOption(args, "--type") ?? "events.test",
       subject: takeOption(args, "--subject") ?? id,
+      message: takeOption(args, "--message") ?? "Hasna events test delivery",
       data: parseJsonOption(takeOption(args, "--data"), { test: true }),
-    });
+      metadata: parseJsonOption(takeOption(args, "--metadata"), {}),
+    }, { honorFilters });
     output(parsed, result, () => console.log(`${result.status}: ${result.channelId}`));
+    return;
+  }
+
+  if (command === "match") {
+    const args = [...tail];
+    const id = args.shift();
+    if (!id) throw new Error("webhooks match requires a channel id");
+    const result = await client.matchChannel(id, {
+      source: takeOption(args, "--source") ?? options.source ?? "hasna.events",
+      type: takeOption(args, "--type") ?? "events.test",
+      subject: takeOption(args, "--subject") ?? id,
+      message: takeOption(args, "--message") ?? "Hasna events match preview",
+      data: parseJsonOption(takeOption(args, "--data"), { test: true }),
+      metadata: parseJsonOption(takeOption(args, "--metadata"), {}),
+    });
+    output(parsed, result, () => console.log(`${result.matched ? "matched" : "skipped"}: ${result.channelId}`));
     return;
   }
 

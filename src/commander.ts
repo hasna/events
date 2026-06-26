@@ -1,13 +1,14 @@
 import {
   EventsClient,
   JsonEventsStore,
+  getEventsStatus,
   sanitizeChannelForOutput,
   sanitizeChannelsForOutput,
   type ChannelConfig,
-  type EventFilter,
   type EventInput,
   type TransportKind,
 } from "./index.js";
+import { parseFilterOptions } from "./filter-options.js";
 
 type CommanderLike = any;
 type CommanderCommandLike = any;
@@ -38,15 +39,6 @@ function parseHeaders(values: string[] | undefined): Record<string, string> | un
     headers[value.slice(0, separator)] = value.slice(separator + 1);
   }
   return headers;
-}
-
-function parseFilter(options: { source?: string; type?: string; subject?: string; severity?: string }): EventFilter[] | undefined {
-  const filter: EventFilter = {};
-  if (options.source) filter.source = options.source;
-  if (options.type) filter.type = options.type;
-  if (options.subject) filter.subject = options.subject;
-  if (options.severity) filter.severity = options.severity;
-  return Object.keys(filter).length > 0 ? [filter] : undefined;
 }
 
 function createClient(options: RegisterEventsCommandsOptions): EventsClient {
@@ -111,6 +103,10 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
     .option("--source <pattern>", "Event source filter")
     .option("--subject <pattern>", "Event subject filter")
     .option("--severity <pattern>", "Event severity filter")
+    .option("--data <path=value...>", "Event data field filter; string values, dot paths, * segment wildcard, ** recursive wildcard", collectValues, [] as string[])
+    .option("--metadata <path=value...>", "Event metadata field filter; string values, dot paths, * segment wildcard, ** recursive wildcard", collectValues, [] as string[])
+    .option("--data-json <path=json...>", "Event data field filter with typed JSON value", collectValues, [] as string[])
+    .option("--metadata-json <path=json...>", "Event metadata field filter with typed JSON value", collectValues, [] as string[])
     .option("--secret <secret>", "Webhook HMAC secret")
     .option("--header <name=value...>", "Webhook header", collectValues, [] as string[])
     .option("--arg <arg...>", "Command argument", collectValues, [] as string[])
@@ -128,6 +124,10 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
       source?: string;
       subject?: string;
       severity?: string;
+      data?: string[];
+      metadata?: string[];
+      dataJson?: string[];
+      metadataJson?: string[];
       secret?: string;
       header?: string[];
       arg?: string[];
@@ -144,7 +144,7 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
         name: actionOptions.name,
         enabled: !actionOptions.disabled,
         transport: actionOptions.transport,
-        filters: parseFilter(actionOptions),
+        filters: parseFilterOptions(actionOptions),
         retry: actionOptions.retryAttempts || actionOptions.retryBackoffMs
           ? { maxAttempts: actionOptions.retryAttempts, backoffMs: actionOptions.retryBackoffMs }
           : undefined,
@@ -178,6 +178,11 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
     }
   });
 
+  webhooks.command("status").description("Show events webhook storage status").option("-j, --json", "Print JSON output", false).action(async (actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
+    const status = await getEventsStatus(options.dataDir);
+    print(status, wantsJson(actionOptions, command), `events dataDir: ${status.dataDir}`);
+  });
+
   webhooks.command("remove").description("Remove a subscription").argument("<id>", "Subscription/channel identifier").option("-j, --json", "Print JSON output", false).action(async (id: string, actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
     const removed = await createClient(options).removeChannel(id);
     print({ removed }, wantsJson(actionOptions, command), removed ? `Removed ${id}` : `Channel not found: ${id}`);
@@ -187,20 +192,47 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
     .command("test")
     .description("Send a test event to one subscription")
     .argument("<id>", "Subscription/channel identifier")
+    .option("--source <source>", "Event source override")
     .option("--type <type>", "Event type", "events.test")
     .option("--subject <subject>", "Event subject")
     .option("--message <message>", "Event message", "Hasna events test delivery")
     .option("--data <json>", "Event data JSON object")
+    .option("--metadata <json>", "Event metadata JSON object")
+    .option("--honor-filters", "Skip delivery when the sample event does not match channel filters", false)
     .option("-j, --json", "Print JSON output", false)
-    .action(async (id: string, actionOptions: { type: string; subject?: string; message: string; data?: string; json?: boolean }, command?: CommanderCommandLike) => {
+    .action(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; honorFilters?: boolean; json?: boolean }, command?: CommanderCommandLike) => {
       const result = await createClient(options).testChannel(id, {
-        source: options.source,
+        source: actionOptions.source ?? options.source,
         type: actionOptions.type,
         subject: actionOptions.subject ?? id,
         message: actionOptions.message,
         data: parseJsonObject(actionOptions.data, { test: true }),
-      });
+        metadata: parseJsonObject(actionOptions.metadata, {}),
+      }, { honorFilters: actionOptions.honorFilters });
       print(result, wantsJson(actionOptions, command), `${result.status}: ${result.channelId}`);
+    });
+
+  webhooks
+    .command("match")
+    .description("Check whether a sample event matches one subscription without delivering")
+    .argument("<id>", "Subscription/channel identifier")
+    .option("--source <source>", "Event source override")
+    .option("--type <type>", "Event type", "events.test")
+    .option("--subject <subject>", "Event subject")
+    .option("--message <message>", "Event message", "Hasna events match preview")
+    .option("--data <json>", "Event data JSON object")
+    .option("--metadata <json>", "Event metadata JSON object")
+    .option("-j, --json", "Print JSON output", false)
+    .action(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; json?: boolean }, command?: CommanderCommandLike) => {
+      const result = await createClient(options).matchChannel(id, {
+        source: actionOptions.source ?? options.source,
+        type: actionOptions.type,
+        subject: actionOptions.subject ?? id,
+        message: actionOptions.message,
+        data: parseJsonObject(actionOptions.data, { test: true }),
+        metadata: parseJsonObject(actionOptions.metadata, {}),
+      });
+      print(result, wantsJson(actionOptions, command), `${result.matched ? "matched" : "skipped"}: ${result.channelId}`);
     });
 
   return webhooks;

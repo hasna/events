@@ -204,6 +204,37 @@ events webhooks test ops
 events webhooks remove ops
 ```
 
+Field filters can match nested `data` or `metadata` values. Plain
+`--data`/`--metadata` values are strings, which keeps ids and slugs such as
+`001` intact. Use `--data-json` or `--metadata-json` for typed JSON predicates.
+Dot paths access nested object keys; dots inside key names are not escaped yet,
+and array traversal is not special-cased. Wildcard behavior stays broad for
+legacy source/type/subject filters. For field paths ending in `_path` or `.path`,
+`*` matches one path segment and `**` matches recursively.
+
+```bash
+events webhooks add loops \
+  --id open-source-task-route \
+  --transport command \
+  --source todos \
+  --type task.created \
+  --metadata 'project_path=/home/hasna/workspace/hasna/opensource/*' \
+  --metadata-json 'route_enabled=true' \
+  --arg events \
+  --arg handle \
+  --arg todos-task
+
+events webhooks match open-source-task-route \
+  --source todos \
+  --type task.created \
+  --metadata '{"project_path":"/home/hasna/workspace/hasna/opensource/open-events","route_enabled":true}'
+
+events webhooks test open-source-task-route --honor-filters \
+  --source todos \
+  --type task.created \
+  --metadata '{"project_path":"/tmp/outside","route_enabled":true}'
+```
+
 Emit, list, and replay:
 
 ```bash

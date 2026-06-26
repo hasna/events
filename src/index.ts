@@ -6,6 +6,7 @@ import type {
   EmitOptions,
   EmitResult,
   EventEnvelope,
+  EventFilter,
   EventInput,
   EventRedactor,
   ReplayOptions,
@@ -25,6 +26,18 @@ export interface EventsClientOptions extends TransportDispatchOptions {
   store?: EventsStore;
   dataDir?: string;
   redactors?: EventRedactor[];
+}
+
+export interface ChannelMatchResult {
+  channelId: string;
+  matched: boolean;
+  event: EventEnvelope;
+  filters?: EventFilter[];
+  reason?: string;
+}
+
+export interface TestChannelOptions {
+  honorFilters?: boolean;
 }
 
 export function createEvent<TData extends Record<string, unknown>>(input: EventInput<TData>): EventEnvelope<TData> {
@@ -107,7 +120,7 @@ export class EventsClient {
     return deliveries;
   }
 
-  async testChannel(id: string, input: Partial<EventInput> = {}): Promise<DeliveryResult> {
+  async matchChannel(id: string, input: Partial<EventInput> = {}): Promise<ChannelMatchResult> {
     const channel = await this.store.getChannel(id);
     if (!channel) throw new Error(`Channel not found: ${id}`);
     const event = createEvent({
@@ -123,6 +136,34 @@ export class EventsClient {
       time: input.time,
       id: input.id,
     });
+    const matched = channelMatchesEvent(channel, event);
+    return {
+      channelId: channel.id,
+      matched,
+      event,
+      filters: channel.filters,
+      reason: matched ? undefined : channel.enabled ? "event did not match channel filters" : "channel is disabled",
+    };
+  }
+
+  async testChannel(id: string, input: Partial<EventInput> = {}, options: TestChannelOptions = {}): Promise<DeliveryResult> {
+    const channel = await this.store.getChannel(id);
+    if (!channel) throw new Error(`Channel not found: ${id}`);
+    const match = await this.matchChannel(id, input);
+    const event = match.event;
+    if (options.honorFilters && !match.matched) {
+      const timestamp = new Date().toISOString();
+      const result = createDeliveryResult(event, channel, [{
+        attempt: 1,
+        status: "skipped",
+        startedAt: timestamp,
+        completedAt: timestamp,
+        error: match.reason,
+      }]);
+      result.metadata = { reason: "filter_mismatch" };
+      await this.store.appendDelivery(result);
+      return result;
+    }
     const eventForChannel = await this.applyRedaction(event, channel);
     const result = await this.deliverWithRetry(eventForChannel, channel);
     await this.store.appendDelivery(result);

@@ -187,6 +187,13 @@ describe("CLI smoke behavior", () => {
     expect(status.files.events.records).toBe(1);
     expect(JSON.stringify(status)).not.toContain("top-secret-value");
     expect(JSON.stringify(status)).not.toContain("raw-token-value");
+
+    const webhooksStatusResult = await runCli(["webhooks", "status"]);
+    expect(webhooksStatusResult.exitCode).toBe(0);
+    const webhooksStatus = JSON.parse(webhooksStatusResult.stdout);
+    expect(webhooksStatus).toMatchObject(status);
+    expect(JSON.stringify(webhooksStatus)).not.toContain("top-secret-value");
+    expect(JSON.stringify(webhooksStatus)).not.toContain("raw-token-value");
   });
 
   test("uses command transport --arg values without forwarding --arg to the process", async () => {
@@ -222,5 +229,118 @@ describe("CLI smoke behavior", () => {
       source: "cli-test",
       type: "command.created",
     });
+  });
+
+  test("filters webhooks by data and metadata fields and previews matches", async () => {
+    const receiverPath = join(dataDir, "receiver.js");
+    const outputPath = join(dataDir, "filtered-events.jsonl");
+    writeFileSync(receiverPath, `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(outputPath)}, process.env.HASNA_EVENT_JSON + "\\n");\n`);
+
+    const add = await runCli([
+      "webhooks",
+      "add",
+      "bun",
+      "--id",
+      "opensource-route",
+      "--transport",
+      "command",
+      "--source",
+      "todos",
+      "--type",
+      "task.created",
+      "--metadata",
+      "project_path=/home/hasna/workspace/hasna/opensource/*",
+      "--metadata-json",
+      "route_enabled=true",
+      "--data",
+      "priority=001",
+      "--arg",
+      receiverPath,
+    ]);
+    expect(add.exitCode).toBe(0);
+    const saved = JSON.parse(add.stdout);
+    expect(saved.filters[0].metadata.project_path).toBe("/home/hasna/workspace/hasna/opensource/*");
+    expect(saved.filters[0].metadata.route_enabled).toBe(true);
+    expect(saved.filters[0].data.priority).toBe("001");
+
+    const match = await runCli([
+      "webhooks",
+      "match",
+      "opensource-route",
+      "--source",
+      "todos",
+      "--type",
+      "task.created",
+      "--data",
+      "{\"priority\":\"001\"}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true}",
+    ]);
+    expect(match.exitCode).toBe(0);
+    expect(JSON.parse(match.stdout).matched).toBe(true);
+
+    const nestedMatch = await runCli([
+      "webhooks",
+      "match",
+      "opensource-route",
+      "--source",
+      "todos",
+      "--type",
+      "task.created",
+      "--data",
+      "{\"priority\":\"001\"}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-codewith/.codewith/worktrees/macos\",\"route_enabled\":true}",
+    ]);
+    expect(nestedMatch.exitCode).toBe(0);
+    expect(JSON.parse(nestedMatch.stdout).matched).toBe(false);
+
+    const skippedTest = await runCli([
+      "webhooks",
+      "test",
+      "opensource-route",
+      "--honor-filters",
+      "--source",
+      "todos",
+      "--type",
+      "task.created",
+      "--data",
+      "{\"priority\":\"001\"}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/private/app\",\"route_enabled\":true}",
+    ]);
+    expect(skippedTest.exitCode).toBe(0);
+    expect(JSON.parse(skippedTest.stdout).status).toBe("skipped");
+
+    const emitMatch = await runCli([
+      "events",
+      "emit",
+      "task.created",
+      "--source",
+      "todos",
+      "--data",
+      "{\"priority\":\"001\"}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true}",
+    ]);
+    expect(emitMatch.exitCode).toBe(0);
+    expect(JSON.parse(emitMatch.stdout).deliveries).toHaveLength(1);
+
+    const emitNested = await runCli([
+      "events",
+      "emit",
+      "task.created",
+      "--source",
+      "todos",
+      "--data",
+      "{\"priority\":\"001\"}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-codewith/.codewith/worktrees/macos\",\"route_enabled\":true}",
+    ]);
+    expect(emitNested.exitCode).toBe(0);
+    expect(JSON.parse(emitNested.stdout).deliveries).toHaveLength(0);
+
+    expect(existsSync(outputPath)).toBe(true);
+    expect(readFileSync(outputPath, "utf-8").trim().split("\n")).toHaveLength(1);
   });
 });

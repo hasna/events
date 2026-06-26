@@ -37,6 +37,21 @@ describe("EventsClient", () => {
     expect(calls).toBe(0);
   });
 
+  test("explains disabled channels in match previews", async () => {
+    const client = new EventsClient({ store: new JsonEventsStore(dataDir) });
+    await client.addChannel({
+      id: "disabled-hook",
+      enabled: false,
+      transport: "webhook",
+      webhook: { url: "https://example.test" },
+      filters: [{ type: "ticket.*" }],
+    });
+
+    const match = await client.matchChannel("disabled-hook", { source: "tickets", type: "ticket.created" });
+    expect(match.matched).toBe(false);
+    expect(match.reason).toBe("channel is disabled");
+  });
+
   test("records failed delivery attempts and retry backoff metadata", async () => {
     const client = new EventsClient({
       store: new JsonEventsStore(dataDir),

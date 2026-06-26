@@ -48,4 +48,89 @@ describe("commander adapter", () => {
 
     expect(output).toEqual(["[]"]);
   });
+
+  test("persists data and metadata webhook filters from embedded commands", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const originalLog = console.log;
+    program.exitOverride();
+    program.option("-j, --json", "Output JSON");
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      await program.parseAsync([
+        "node",
+        "testapp",
+        "webhooks",
+        "add",
+        "node",
+        "--id",
+        "filtered",
+        "--transport",
+        "command",
+        "--type",
+        "task.created",
+        "--metadata",
+        "project_path=/home/hasna/workspace/hasna/opensource/*",
+        "--metadata-json",
+        "route_enabled=true",
+        "--data",
+        "short_id=001",
+        "--arg",
+        "-e",
+        "--arg",
+        "process.exit(0)",
+      ]);
+      await program.parseAsync(["node", "testapp", "-j", "webhooks", "list"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const channels = JSON.parse(output.at(-1) ?? "[]");
+    expect(channels[0].filters[0].metadata).toEqual({
+      project_path: "/home/hasna/workspace/hasna/opensource/*",
+      route_enabled: true,
+    });
+    expect(channels[0].filters[0].data.short_id).toBe("001");
+  });
+
+  test("embedded match can override source for route previews", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const originalLog = console.log;
+    program.exitOverride();
+    program.option("-j, --json", "Output JSON");
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      await program.parseAsync([
+        "node",
+        "testapp",
+        "webhooks",
+        "add",
+        "node",
+        "--id",
+        "todos-route",
+        "--transport",
+        "command",
+        "--source",
+        "todos",
+        "--type",
+        "task.created",
+        "--arg",
+        "-e",
+        "--arg",
+        "process.exit(0)",
+      ]);
+      await program.parseAsync(["node", "testapp", "-j", "webhooks", "match", "todos-route", "--source", "todos", "--type", "task.created"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(JSON.parse(output.at(-1) ?? "{}").matched).toBe(true);
+  });
 });
