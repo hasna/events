@@ -409,6 +409,8 @@ describe("CLI smoke behavior", () => {
       "task.created",
       "--source",
       "todos",
+      "--dedupe-key",
+      "todos:task:open-events-contract",
       "--data",
       "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-events\"]}",
       "--metadata",
@@ -416,6 +418,24 @@ describe("CLI smoke behavior", () => {
     ]);
     expect(emitMatch.exitCode).toBe(0);
     expect(JSON.parse(emitMatch.stdout).deliveries).toHaveLength(1);
+
+    const emitDuplicate = await runCli([
+      "events",
+      "emit",
+      "task.created",
+      "--source",
+      "todos",
+      "--dedupe-key",
+      "todos:task:open-events-contract",
+      "--data",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-events\"]}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true,\"automation\":{\"no_auto\":false}}",
+    ]);
+    expect(emitDuplicate.exitCode).toBe(0);
+    const duplicate = JSON.parse(emitDuplicate.stdout);
+    expect(duplicate.deduped).toBe(true);
+    expect(duplicate.deliveries).toHaveLength(0);
 
     const emitNested = await runCli([
       "events",
@@ -447,5 +467,10 @@ describe("CLI smoke behavior", () => {
 
     expect(existsSync(outputPath)).toBe(true);
     expect(readFileSync(outputPath, "utf-8").trim().split("\n")).toHaveLength(1);
+
+    const replay = await runCli(["events", "replay", "--source", "todos", "--type", "task.created"]);
+    expect(replay.exitCode).toBe(0);
+    expect(JSON.parse(replay.stdout).deliveries).toHaveLength(1);
+    expect(readFileSync(outputPath, "utf-8").trim().split("\n")).toHaveLength(2);
   });
 });
