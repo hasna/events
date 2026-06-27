@@ -1,6 +1,6 @@
 {
   "name": "@hasna/events",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Shared event envelopes, local subscriptions, and webhook delivery for Hasna open-source apps",
   "type": "module",
   "main": "./dist/index.js",
