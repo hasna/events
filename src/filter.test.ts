@@ -62,6 +62,48 @@ describe("event filtering", () => {
     })).toBe(true);
   });
 
+  test("matches array members for string field filters", () => {
+    const taskEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: { tags: ["auto:route", "repo:open-events"] },
+      metadata: {},
+    });
+
+    expect(eventMatchesFilter(taskEvent, {
+      data: { tags: "auto:*" },
+    })).toBe(true);
+    expect(eventMatchesFilter(taskEvent, {
+      data: { tags: "manual" },
+    })).toBe(false);
+  });
+
+  test("supports negative field matchers", () => {
+    const taskEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: { priority: "001" },
+      metadata: { automation: { no_auto: false }, route_enabled: true },
+    });
+    const blockedEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: { priority: "001" },
+      metadata: { automation: { no_auto: true }, route_enabled: true },
+    });
+
+    const filter = {
+      metadata: {
+        route_enabled: true,
+        "automation.no_auto": { not: true },
+      },
+    };
+
+    expect(eventMatchesFilter(taskEvent, filter)).toBe(true);
+    expect(eventMatchesFilter(blockedEvent, filter)).toBe(false);
+    expect(eventMatchesFilter(createEvent({ source: "todos", type: "task.created", data: {}, metadata: { route_enabled: true } }), filter)).toBe(true);
+  });
+
   test("rejects disabled channels before filters", () => {
     const channel: ChannelConfig = {
       id: "disabled",

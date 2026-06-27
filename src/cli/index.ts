@@ -169,10 +169,10 @@ Options:
   --source <source>         Event source filter
   --subject <subject>       Event subject filter
   --severity <severity>     Event severity filter
-  --data <path=value>       Event data field filter, repeatable; string values, dot paths, * segment wildcard, ** recursive wildcard
-  --metadata <path=value>   Event metadata field filter, repeatable; string values, dot paths, * segment wildcard, ** recursive wildcard
-  --data-json <path=json>   Event data field filter with typed JSON value
-  --metadata-json <path=json> Event metadata field filter with typed JSON value
+  --data <path=value|path!=value> Event data field filter, repeatable; strings, dot paths, array-member matching, * segment wildcard, ** recursive wildcard
+  --metadata <path=value|path!=value> Event metadata field filter, repeatable; strings, dot paths, array-member matching, * segment wildcard, ** recursive wildcard
+  --data-json <path=json|path!=json> Event data field filter with typed JSON value
+  --metadata-json <path=json|path!=json> Event metadata field filter with typed JSON value
   --honor-filters           On webhooks test, skip delivery when the sample event does not match filters
   --transport <kind>        webhook or command
   --secret <secret>         Webhook signing secret
@@ -197,10 +197,10 @@ Options:
   --source <source>         Event source filter
   --subject <subject>       Event subject filter
   --severity <severity>     Event severity filter
-  --data <path=value>       Event data field filter, repeatable
-  --metadata <path=value>   Event metadata field filter, repeatable
-  --data-json <path=json>   Event data field filter with typed JSON value
-  --metadata-json <path=json> Event metadata field filter with typed JSON value
+  --data <path=value|path!=value> Event data field filter, repeatable
+  --metadata <path=value|path!=value> Event metadata field filter, repeatable
+  --data-json <path=json|path!=json> Event data field filter with typed JSON value
+  --metadata-json <path=json|path!=json> Event metadata field filter with typed JSON value
   --secret <secret>         Webhook signing secret
   --header <name=value>     Webhook header, repeatable
   --arg <arg>               Command argument, repeatable; values may begin with dashes

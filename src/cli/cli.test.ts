@@ -337,8 +337,12 @@ describe("CLI smoke behavior", () => {
       "project_path=/home/hasna/workspace/hasna/opensource/*",
       "--metadata-json",
       "route_enabled=true",
+      "--metadata-json",
+      "automation.no_auto!=true",
       "--data",
       "priority=001",
+      "--data",
+      "tags=auto:*",
       "--arg",
       receiverPath,
     ]);
@@ -346,7 +350,9 @@ describe("CLI smoke behavior", () => {
     const saved = JSON.parse(add.stdout);
     expect(saved.filters[0].metadata.project_path).toBe("/home/hasna/workspace/hasna/opensource/*");
     expect(saved.filters[0].metadata.route_enabled).toBe(true);
+    expect(saved.filters[0].metadata["automation.no_auto"]).toEqual({ not: true });
     expect(saved.filters[0].data.priority).toBe("001");
+    expect(saved.filters[0].data.tags).toBe("auto:*");
 
     const match = await runCli([
       "webhooks",
@@ -357,9 +363,9 @@ describe("CLI smoke behavior", () => {
       "--type",
       "task.created",
       "--data",
-      "{\"priority\":\"001\"}",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-events\"]}",
       "--metadata",
-      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true}",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true,\"automation\":{\"no_auto\":false}}",
     ]);
     expect(match.exitCode).toBe(0);
     expect(JSON.parse(match.stdout).matched).toBe(true);
@@ -373,7 +379,7 @@ describe("CLI smoke behavior", () => {
       "--type",
       "task.created",
       "--data",
-      "{\"priority\":\"001\"}",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-codewith\"]}",
       "--metadata",
       "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-codewith/.codewith/worktrees/macos\",\"route_enabled\":true}",
     ]);
@@ -390,7 +396,7 @@ describe("CLI smoke behavior", () => {
       "--type",
       "task.created",
       "--data",
-      "{\"priority\":\"001\"}",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\"]}",
       "--metadata",
       "{\"project_path\":\"/home/hasna/workspace/hasna/private/app\",\"route_enabled\":true}",
     ]);
@@ -404,9 +410,9 @@ describe("CLI smoke behavior", () => {
       "--source",
       "todos",
       "--data",
-      "{\"priority\":\"001\"}",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-events\"]}",
       "--metadata",
-      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true}",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true,\"automation\":{\"no_auto\":false}}",
     ]);
     expect(emitMatch.exitCode).toBe(0);
     expect(JSON.parse(emitMatch.stdout).deliveries).toHaveLength(1);
@@ -418,12 +424,26 @@ describe("CLI smoke behavior", () => {
       "--source",
       "todos",
       "--data",
-      "{\"priority\":\"001\"}",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-codewith\"]}",
       "--metadata",
       "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-codewith/.codewith/worktrees/macos\",\"route_enabled\":true}",
     ]);
     expect(emitNested.exitCode).toBe(0);
     expect(JSON.parse(emitNested.stdout).deliveries).toHaveLength(0);
+
+    const emitNoAuto = await runCli([
+      "events",
+      "emit",
+      "task.created",
+      "--source",
+      "todos",
+      "--data",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-events\"]}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true,\"automation\":{\"no_auto\":true}}",
+    ]);
+    expect(emitNoAuto.exitCode).toBe(0);
+    expect(JSON.parse(emitNoAuto.stdout).deliveries).toHaveLength(0);
 
     expect(existsSync(outputPath)).toBe(true);
     expect(readFileSync(outputPath, "utf-8").trim().split("\n")).toHaveLength(1);

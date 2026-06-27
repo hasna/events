@@ -1,4 +1,4 @@
-import type { ChannelConfig, EventEnvelope, EventFilter, StringMatcher } from "./types.js";
+import type { ChannelConfig, EventEnvelope, EventFilter, FieldMatcher, FieldMatcherValue, NegativeFieldMatcher, StringMatcher } from "./types.js";
 
 function getPathValue(input: Record<string, unknown>, path: string): unknown {
   return path.split(".").reduce<unknown>((value, part) => {
@@ -36,18 +36,48 @@ export function matchString(value: string | undefined, matcher: StringMatcher | 
 
 function matchRecord(
   input: Record<string, unknown>,
-  matcher: Record<string, StringMatcher | number | boolean | null> | undefined,
+  matcher: Record<string, FieldMatcher> | undefined,
 ): boolean {
   if (!matcher) return true;
   return Object.entries(matcher).every(([path, expected]) => {
     const actual = getPathValue(input, path);
-    if (typeof expected === "string" || Array.isArray(expected)) {
-      return matchString(actual === undefined ? undefined : String(actual), expected, {
-        segmentSafe: path.endsWith("_path") || path.endsWith(".path"),
-      });
-    }
-    return actual === expected;
+    return matchField(actual, expected, path);
   });
+}
+
+function matchField(actual: unknown, expected: FieldMatcher, path: string): boolean {
+  if (isNegativeMatcher(expected)) {
+    return !matchPositiveField(actual, expected.not, path);
+  }
+  return matchPositiveField(actual, expected, path);
+}
+
+function matchPositiveField(actual: unknown, expected: FieldMatcherValue, path: string): boolean {
+  if (typeof expected === "string" || Array.isArray(expected)) {
+    return stringCandidates(actual).some((candidate) => matchString(candidate, expected, {
+      segmentSafe: path.endsWith("_path") || path.endsWith(".path"),
+    }));
+  }
+  if (Array.isArray(actual)) {
+    return actual.some((item) => item === expected);
+  }
+  return actual === expected;
+}
+
+function stringCandidates(actual: unknown): string[] {
+  if (actual === undefined) return [];
+  if (Array.isArray(actual)) {
+    return actual.flatMap((item) => isPrimitiveFieldValue(item) ? [String(item)] : []);
+  }
+  return [String(actual)];
+}
+
+function isPrimitiveFieldValue(value: unknown): value is string | number | boolean | null {
+  return value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+function isNegativeMatcher(value: FieldMatcher): value is NegativeFieldMatcher {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value) && "not" in value);
 }
 
 export function eventMatchesFilter(event: EventEnvelope, filter: EventFilter): boolean {

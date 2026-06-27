@@ -207,8 +207,11 @@ events webhooks remove ops
 Field filters can match nested `data` or `metadata` values. Plain
 `--data`/`--metadata` values are strings, which keeps ids and slugs such as
 `001` intact. Use `--data-json` or `--metadata-json` for typed JSON predicates.
-Dot paths access nested object keys; dots inside key names are not escaped yet,
-and array traversal is not special-cased. Wildcard behavior stays broad for
+Dot paths access nested object keys; dots inside key names are not escaped yet.
+When the actual event value is an array, string filters match any primitive
+array member, which is useful for tag routing such as `data.tags=auto:route`.
+Use `path!=value` or `path!=json` for negative predicates such as
+`metadata-json 'automation.no_auto!=true'`. Wildcard behavior stays broad for
 legacy source/type/subject filters. For field paths ending in `_path` or `.path`,
 `*` matches one path segment and `**` matches recursively.
 
@@ -223,6 +226,8 @@ events webhooks add loops \
   --retry-backoff-ms 500 \
   --metadata 'project_path=/home/hasna/workspace/hasna/opensource/*' \
   --metadata-json 'route_enabled=true' \
+  --metadata-json 'automation.no_auto!=true' \
+  --data 'tags=auto:route' \
   --arg events \
   --arg handle \
   --arg todos-task

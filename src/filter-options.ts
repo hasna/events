@@ -1,6 +1,6 @@
-import type { EventFilter, StringMatcher } from "./types.js";
+import type { EventFilter, FieldMatcherValue } from "./types.js";
 
-type MatcherValue = StringMatcher | number | boolean | null;
+type MatcherValue = FieldMatcherValue | { not: FieldMatcherValue };
 
 export interface FilterOptionInput {
   source?: string;
@@ -17,11 +17,11 @@ export function parseFieldMatchers(values: string[] | undefined, label: string, 
   if (!values?.length) return undefined;
   const result: Record<string, MatcherValue> = {};
   for (const value of values) {
-    const separator = value.indexOf("=");
-    if (separator <= 0) throw new Error(`Invalid ${label} filter, expected path=value: ${value}`);
-    const path = value.slice(0, separator);
+    const parsed = parseMatcherExpression(value, label);
+    const path = parsed.path;
     if (path in result) throw new Error(`Duplicate ${label} filter path: ${path}`);
-    result[path] = typed ? parseTypedMatcherValue(value.slice(separator + 1), label) : value.slice(separator + 1);
+    const matcherValue = typed ? parseTypedMatcherValue(parsed.rawValue, label) : parsed.rawValue;
+    result[path] = parsed.negated ? { not: matcherValue } : matcherValue;
   }
   return result;
 }
@@ -51,7 +51,7 @@ function mergeMatchers(...records: Array<Record<string, MatcherValue> | undefine
   return result;
 }
 
-function parseTypedMatcherValue(value: string, label: string): MatcherValue {
+function parseTypedMatcherValue(value: string, label: string): FieldMatcherValue {
   const parsed = JSON.parse(value);
   if (
     parsed === null ||
@@ -63,4 +63,22 @@ function parseTypedMatcherValue(value: string, label: string): MatcherValue {
     return parsed;
   }
   throw new Error(`${label} filter JSON values must be string, string[], number, boolean, or null`);
+}
+
+function parseMatcherExpression(value: string, label: string): { path: string; rawValue: string; negated: boolean } {
+  const negativeSeparator = value.indexOf("!=");
+  if (negativeSeparator > 0) {
+    return {
+      path: value.slice(0, negativeSeparator),
+      rawValue: value.slice(negativeSeparator + 2),
+      negated: true,
+    };
+  }
+  const separator = value.indexOf("=");
+  if (separator <= 0) throw new Error(`Invalid ${label} filter, expected path=value or path!=value: ${value}`);
+  return {
+    path: value.slice(0, separator),
+    rawValue: value.slice(separator + 1),
+    negated: false,
+  };
 }

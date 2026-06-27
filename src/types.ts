@@ -31,14 +31,19 @@ export interface EventInput<TData extends EventData = EventData> {
 }
 
 export type StringMatcher = string | string[];
+export type FieldMatcherValue = StringMatcher | number | boolean | null;
+export interface NegativeFieldMatcher {
+  not: FieldMatcherValue;
+}
+export type FieldMatcher = FieldMatcherValue | NegativeFieldMatcher;
 
 export interface EventFilter {
   source?: StringMatcher;
   type?: StringMatcher;
   subject?: StringMatcher;
   severity?: StringMatcher;
-  data?: Record<string, StringMatcher | number | boolean | null>;
-  metadata?: Record<string, StringMatcher | number | boolean | null>;
+  data?: Record<string, FieldMatcher>;
+  metadata?: Record<string, FieldMatcher>;
 }
 
 export interface RetryPolicy {
