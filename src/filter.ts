@@ -9,6 +9,20 @@ function getPathValue(input: Record<string, unknown>, path: string): unknown {
   }, input);
 }
 
+function getFieldValues(input: Record<string, unknown>, path: string): unknown[] {
+  const values: unknown[] = [];
+  const push = (value: unknown) => {
+    if (!values.some((item) => Object.is(item, value))) values.push(value);
+  };
+
+  if (path.includes(".") && path in input) push(input[path]);
+
+  const nestedValue = getPathValue(input, path);
+  if (nestedValue !== undefined || !path.includes(".")) push(nestedValue);
+
+  return values;
+}
+
 function wildcardToRegExp(pattern: string, options: { segmentSafe?: boolean } = {}): RegExp {
   let body = "";
   for (let index = 0; index < pattern.length; index += 1) {
@@ -40,16 +54,16 @@ function matchRecord(
 ): boolean {
   if (!matcher) return true;
   return Object.entries(matcher).every(([path, expected]) => {
-    const actual = getPathValue(input, path);
-    return matchField(actual, expected, path);
+    const actualValues = getFieldValues(input, path);
+    return matchField(actualValues, expected, path);
   });
 }
 
-function matchField(actual: unknown, expected: FieldMatcher, path: string): boolean {
+function matchField(actualValues: unknown[], expected: FieldMatcher, path: string): boolean {
   if (isNegativeMatcher(expected)) {
-    return !matchPositiveField(actual, expected.not, path);
+    return !actualValues.some((actual) => matchPositiveField(actual, expected.not, path));
   }
-  return matchPositiveField(actual, expected, path);
+  return actualValues.some((actual) => matchPositiveField(actual, expected, path));
 }
 
 function matchPositiveField(actual: unknown, expected: FieldMatcherValue, path: string): boolean {

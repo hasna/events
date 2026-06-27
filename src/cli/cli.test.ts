@@ -370,6 +370,22 @@ describe("CLI smoke behavior", () => {
     expect(match.exitCode).toBe(0);
     expect(JSON.parse(match.stdout).matched).toBe(true);
 
+    const flatNoAutoDeny = await runCli([
+      "webhooks",
+      "match",
+      "opensource-route",
+      "--source",
+      "todos",
+      "--type",
+      "task.created",
+      "--data",
+      "{\"priority\":\"001\",\"tags\":[\"auto:route\",\"repo:open-events\"]}",
+      "--metadata",
+      "{\"project_path\":\"/home/hasna/workspace/hasna/opensource/open-events\",\"route_enabled\":true,\"automation.no_auto\":true}",
+    ]);
+    expect(flatNoAutoDeny.exitCode).toBe(0);
+    expect(JSON.parse(flatNoAutoDeny.stdout).matched).toBe(false);
+
     const nestedMatch = await runCli([
       "webhooks",
       "match",

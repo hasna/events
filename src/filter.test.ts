@@ -104,6 +104,44 @@ describe("event filtering", () => {
     expect(eventMatchesFilter(createEvent({ source: "todos", type: "task.created", data: {}, metadata: { route_enabled: true } }), filter)).toBe(true);
   });
 
+  test("treats dotted field filters as nested paths and literal keys", () => {
+    const nestedEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: {},
+      metadata: { automation: { manual_required: true }, route_enabled: true },
+    });
+    const flatEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: {},
+      metadata: { "automation.manual_required": true, route_enabled: true },
+    });
+    const allowedEvent = createEvent({
+      source: "todos",
+      type: "task.created",
+      data: {},
+      metadata: { automation: { manual_required: false }, route_enabled: true },
+    });
+
+    const denyManualFilter = {
+      metadata: {
+        route_enabled: true,
+        "automation.manual_required": { not: true },
+      },
+    };
+
+    expect(eventMatchesFilter(nestedEvent, denyManualFilter)).toBe(false);
+    expect(eventMatchesFilter(flatEvent, denyManualFilter)).toBe(false);
+    expect(eventMatchesFilter(allowedEvent, denyManualFilter)).toBe(true);
+    expect(eventMatchesFilter(nestedEvent, {
+      metadata: { "automation.manual_required": true },
+    })).toBe(true);
+    expect(eventMatchesFilter(flatEvent, {
+      metadata: { "automation.manual_required": true },
+    })).toBe(true);
+  });
+
   test("rejects disabled channels before filters", () => {
     const channel: ChannelConfig = {
       id: "disabled",
