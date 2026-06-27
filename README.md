@@ -218,11 +218,21 @@ events webhooks add loops \
   --transport command \
   --source todos \
   --type task.created \
+  --timeout-ms 15000 \
+  --retry-attempts 3 \
+  --retry-backoff-ms 500 \
   --metadata 'project_path=/home/hasna/workspace/hasna/opensource/*' \
   --metadata-json 'route_enabled=true' \
   --arg events \
   --arg handle \
   --arg todos-task
+
+# Command args that begin with dashes can be passed either form:
+events webhooks add events --id json-route --transport command --arg --json
+events webhooks add events --id json-route --transport command --arg=--json
+
+# For nested CLIs, put child positional args and flags after an explicit delimiter.
+events webhooks add events --id nested-route --transport command -- handle todos-task --json
 
 events webhooks match open-source-task-route \
   --source todos \

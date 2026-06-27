@@ -31,12 +31,23 @@ function parseGlobalArgs(argv: string[]): ParsedArgs {
   let dir: string | undefined;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === "--") {
+      rest.push(...argv.slice(index + 1));
+      break;
+    }
+    if (!arg.startsWith("-")) {
+      rest.push(...argv.slice(index));
+      break;
+    }
     if (arg === "--json" || arg === "-j") {
       json = true;
+    } else if (arg.startsWith("--dir=")) {
+      dir = arg.slice("--dir=".length);
     } else if (arg === "--dir") {
       dir = argv[++index];
     } else {
-      rest.push(arg);
+      rest.push(...argv.slice(index));
+      break;
     }
   }
   return { json, dir, rest };
@@ -170,6 +181,42 @@ Options:
   --no-deliver              Available on events emit`);
 }
 
+function printWebhookAddHelp(options: RunEventsCliOptions = {}): void {
+  const name = commandName(options);
+  console.log(`${name} webhooks add
+
+Usage:
+  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
+  ${name} [--dir <path>] [--json] webhooks add <command> --transport command [options] -- [command-args...]
+
+Options:
+  --id <id>                 Channel id
+  --name <name>             Display name
+  --transport <kind>        webhook or command
+  --type <pattern>          Event type filter, supports wildcards
+  --source <source>         Event source filter
+  --subject <subject>       Event subject filter
+  --severity <severity>     Event severity filter
+  --data <path=value>       Event data field filter, repeatable
+  --metadata <path=value>   Event metadata field filter, repeatable
+  --data-json <path=json>   Event data field filter with typed JSON value
+  --metadata-json <path=json> Event metadata field filter with typed JSON value
+  --secret <secret>         Webhook signing secret
+  --header <name=value>     Webhook header, repeatable
+  --arg <arg>               Command argument, repeatable; values may begin with dashes
+  --timeout-ms <ms>         Transport timeout in milliseconds
+  --retry-attempts <n>      Maximum delivery attempts
+  --retry-backoff-ms <ms>   Initial retry backoff in milliseconds
+  --redact <path>           Redaction path, repeatable
+  --disabled                Create channel disabled
+
+Examples:
+  ${name} webhooks add https://example.com/webhooks/hasna --id ops --retry-attempts 3 --retry-backoff-ms 500
+  ${name} webhooks add bun --id command-hook --transport command --arg run --arg ./handler.ts --arg --json
+  ${name} webhooks add bun --id command-hook --transport command --arg=--json
+  ${name} webhooks add bun --id command-hook --transport command -- run ./handler.ts --json`);
+}
+
 function printEventsHelp(options: RunEventsCliOptions = {}): void {
   const name = commandName(options);
   console.log(`${name} events
@@ -220,6 +267,10 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
       printWebhooksHelp(options);
       return;
     }
+    if (command === "add" && (tail[0] === "--help" || tail[0] === "-h")) {
+      printWebhookAddHelp(options);
+      return;
+    }
     if (tail.includes("--help") || tail.includes("-h")) {
       printWebhooksHelp(options);
       return;
@@ -244,7 +295,7 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
 
 async function handleWebhooks(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs, options: RunEventsCliOptions): Promise<void> {
   if (command === "add") {
-    const args = [...tail];
+    const { args, delimiterArgs } = splitDelimiter(tail);
     const transport = (takeOption(args, "--transport") ?? "webhook") as TransportKind;
     const id = takeOption(args, "--id") ?? crypto.randomUUID();
     const name = takeOption(args, "--name");
@@ -274,7 +325,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     if (transport === "webhook") {
       channel.webhook = { url: target, secret, headers: parseHeaders(headerValues), timeoutMs };
     } else if (transport === "command") {
-      channel.command = { command: target, args: [...args.slice(1), ...commandArgs], timeoutMs };
+      channel.command = { command: target, args: [...args.slice(1), ...commandArgs, ...delimiterArgs], timeoutMs };
     } else {
       throw new Error(`Transport ${transport} is reserved for future use and cannot be added yet`);
     }
@@ -349,6 +400,15 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
   }
 
   throw new Error(`Unknown webhooks command: ${command ?? ""}`);
+}
+
+function splitDelimiter(values: string[]): { args: string[]; delimiterArgs: string[] } {
+  const delimiterIndex = values.indexOf("--");
+  if (delimiterIndex === -1) return { args: [...values], delimiterArgs: [] };
+  return {
+    args: values.slice(0, delimiterIndex),
+    delimiterArgs: values.slice(delimiterIndex + 1),
+  };
 }
 
 async function handleEvents(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs, options: RunEventsCliOptions): Promise<void> {

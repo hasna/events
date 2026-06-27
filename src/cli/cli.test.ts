@@ -69,6 +69,10 @@ describe("CLI smoke behavior", () => {
     expect(addHelp.exitCode).toBe(0);
     expect(addHelp.stderr).toBe("");
     expect(addHelp.stdout).toContain("webhooks add");
+    expect(addHelp.stdout).toContain("--arg <arg>");
+    expect(addHelp.stdout).toContain("--timeout-ms <ms>");
+    expect(addHelp.stdout).toContain("--retry-attempts <n>");
+    expect(addHelp.stdout).toContain("--arg=--json");
 
     const emitHelp = await runCli(["events", "emit", "--help"]);
     expect(emitHelp.exitCode).toBe(0);
@@ -228,6 +232,87 @@ describe("CLI smoke behavior", () => {
     expect(JSON.parse(readFileSync(outputPath, "utf-8").trim())).toMatchObject({
       source: "cli-test",
       type: "command.created",
+    });
+  });
+
+  test("preserves command transport --arg values that begin with dashes", async () => {
+    const add = await runCli([
+      "webhooks",
+      "add",
+      "bun",
+      "--id",
+      "dash-arg",
+      "--transport",
+      "command",
+      "--arg",
+      "--json",
+    ]);
+
+    expect(add.exitCode).toBe(0);
+    expect(JSON.parse(add.stdout)).toMatchObject({
+      id: "dash-arg",
+      command: { command: "bun", args: ["--json"] },
+    });
+  });
+
+  test("preserves command transport --arg= values that begin with dashes", async () => {
+    const add = await runCli([
+      "webhooks",
+      "add",
+      "bun",
+      "--id",
+      "equals-dash-arg",
+      "--transport",
+      "command",
+      "--arg=--json",
+    ]);
+
+    expect(add.exitCode).toBe(0);
+    expect(JSON.parse(add.stdout)).toMatchObject({
+      id: "equals-dash-arg",
+      command: { command: "bun", args: ["--json"] },
+    });
+  });
+
+  test("preserves positional command transport child args", async () => {
+    const add = await runCli([
+      "webhooks",
+      "add",
+      "bun",
+      "--id",
+      "positional-command-args",
+      "--transport",
+      "command",
+      "run",
+      "./handler.ts",
+    ]);
+
+    expect(add.exitCode).toBe(0);
+    expect(JSON.parse(add.stdout)).toMatchObject({
+      id: "positional-command-args",
+      command: { command: "bun", args: ["run", "./handler.ts"] },
+    });
+  });
+
+  test("preserves command transport child args after explicit delimiter", async () => {
+    const add = await runCli([
+      "webhooks",
+      "add",
+      "bun",
+      "--id",
+      "delimited-command-args",
+      "--transport",
+      "command",
+      "--",
+      "run",
+      "./handler.ts",
+      "--json",
+    ]);
+
+    expect(add.exitCode).toBe(0);
+    expect(JSON.parse(add.stdout)).toMatchObject({
+      id: "delimited-command-args",
+      command: { command: "bun", args: ["run", "./handler.ts", "--json"] },
     });
   });
 
