@@ -17,7 +17,7 @@ export interface RegisterEventsCommandsOptions {
   source: string;
   dataDir?: string;
   createClient?: () => EventsClient;
-  webhooksCommandName?: string;
+  channelsCommandName?: string;
   eventsCommandName?: string;
 }
 
@@ -89,14 +89,14 @@ function wantsJson(actionOptions: {
   return hasJsonOption(actionOptions) || hasJsonOption(command);
 }
 
-export function registerWebhookCommands(program: CommanderLike, options: RegisterEventsCommandsOptions): CommanderCommandLike {
-  const webhooks = program.command(options.webhooksCommandName ?? "webhooks").description("Manage Hasna event webhook subscriptions");
+export function registerChannelCommands(program: CommanderLike, options: RegisterEventsCommandsOptions): CommanderCommandLike {
+  const channels = program.command(options.channelsCommandName ?? "channels").description("Manage Hasna event channels");
 
-  webhooks
+  channels
     .command("add")
-    .description("Add or replace a webhook or command subscription")
+    .description("Add or replace a channel")
     .argument("<target>", "Webhook URL or command binary")
-    .requiredOption("--id <id>", "Subscription/channel identifier")
+    .requiredOption("--id <id>", "Channel identifier")
     .option("--transport <kind>", "Transport kind: webhook or command", "webhook")
     .option("--name <name>", "Display name")
     .option("--type <pattern>", "Event type filter, e.g. todos.task.*")
@@ -163,7 +163,7 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
       print(sanitizeChannelForOutput(saved), wantsJson(actionOptions, command), `Added ${saved.transport} channel ${saved.id}`);
     });
 
-  webhooks.command("list").description("List configured subscriptions").option("-j, --json", "Print JSON output", false).action(async (actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
+  channels.command("list").description("List configured channels").option("-j, --json", "Print JSON output", false).action(async (actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
     const channels = await createClient(options).listChannels();
     if (wantsJson(actionOptions, command)) {
       console.log(JSON.stringify(sanitizeChannelsForOutput(channels), null, 2));
@@ -178,20 +178,20 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
     }
   });
 
-  webhooks.command("status").description("Show events webhook storage status").option("-j, --json", "Print JSON output", false).action(async (actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
+  channels.command("status").description("Show events channel storage status").option("-j, --json", "Print JSON output", false).action(async (actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
     const status = await getEventsStatus(options.dataDir);
     print(status, wantsJson(actionOptions, command), `events dataDir: ${status.dataDir}`);
   });
 
-  webhooks.command("remove").description("Remove a subscription").argument("<id>", "Subscription/channel identifier").option("-j, --json", "Print JSON output", false).action(async (id: string, actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
+  channels.command("remove").description("Remove a channel").argument("<id>", "Channel identifier").option("-j, --json", "Print JSON output", false).action(async (id: string, actionOptions: { json?: boolean }, command?: CommanderCommandLike) => {
     const removed = await createClient(options).removeChannel(id);
     print({ removed }, wantsJson(actionOptions, command), removed ? `Removed ${id}` : `Channel not found: ${id}`);
   });
 
-  webhooks
+  channels
     .command("test")
-    .description("Send a test event to one subscription")
-    .argument("<id>", "Subscription/channel identifier")
+    .description("Send a test event to one channel")
+    .argument("<id>", "Channel identifier")
     .option("--source <source>", "Event source override")
     .option("--type <type>", "Event type", "events.test")
     .option("--subject <subject>", "Event subject")
@@ -212,10 +212,10 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
       print(result, wantsJson(actionOptions, command), `${result.status}: ${result.channelId}`);
     });
 
-  webhooks
+  channels
     .command("match")
-    .description("Check whether a sample event matches one subscription without delivering")
-    .argument("<id>", "Subscription/channel identifier")
+    .description("Check whether a sample event matches one channel without delivering")
+    .argument("<id>", "Channel identifier")
     .option("--source <source>", "Event source override")
     .option("--type <type>", "Event type", "events.test")
     .option("--subject <subject>", "Event subject")
@@ -235,7 +235,7 @@ export function registerWebhookCommands(program: CommanderLike, options: Registe
       print(result, wantsJson(actionOptions, command), `${result.matched ? "matched" : "skipped"}: ${result.channelId}`);
     });
 
-  return webhooks;
+  return channels;
 }
 
 export function registerEventCommands(program: CommanderLike, options: RegisterEventsCommandsOptions): CommanderCommandLike {
@@ -310,7 +310,7 @@ export function registerEventCommands(program: CommanderLike, options: RegisterE
 }
 
 export function registerEventsCommands(program: CommanderLike, options: RegisterEventsCommandsOptions): void {
-  registerWebhookCommands(program, options);
+  registerChannelCommands(program, options);
   registerEventCommands(program, options);
 }
 

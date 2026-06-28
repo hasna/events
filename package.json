@@ -1,7 +1,7 @@
 {
   "name": "@hasna/events",
   "version": "0.1.12",
-  "description": "Shared event envelopes, local subscriptions, and webhook delivery for Hasna open-source apps",
+  "description": "Shared event envelopes, local channels, replay, and delivery transports for Hasna open-source apps",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -52,7 +52,7 @@
   },
   "keywords": [
     "events",
-    "webhooks",
+    "channels",
     "cli",
     "typescript",
     "bun",

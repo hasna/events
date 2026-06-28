@@ -16,18 +16,19 @@ afterEach(() => {
 });
 
 describe("commander adapter", () => {
-  test("registers app-scoped webhook and event commands", async () => {
+  test("registers app-scoped channel and event commands", async () => {
     const program = new Command();
     program.exitOverride();
     program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
     registerEventsCommands(program, { source: "testapp", dataDir });
 
-    await program.parseAsync(["node", "testapp", "webhooks", "add", "node", "--id", "cmd", "--transport", "command", "--arg", "-e", "--arg", "process.exit(0)"]);
+    await program.parseAsync(["node", "testapp", "channels", "add", "node", "--id", "cmd", "--transport", "command", "--arg", "-e", "--arg", "process.exit(0)"]);
     await program.parseAsync(["node", "testapp", "events", "emit", "testapp.thing.created", "--no-deliver"]);
-    await program.parseAsync(["node", "testapp", "webhooks", "remove", "cmd"]);
+    await program.parseAsync(["node", "testapp", "channels", "remove", "cmd"]);
 
-    expect(program.commands.map((command) => command.name())).toContain("webhooks");
+    expect(program.commands.map((command) => command.name())).toContain("channels");
     expect(program.commands.map((command) => command.name())).toContain("events");
+    expect(program.commands.map((command) => command.name())).not.toContain("webhooks");
   });
 
   test("honors inherited parent json option", async () => {
@@ -49,7 +50,7 @@ describe("commander adapter", () => {
     expect(output).toEqual(["[]"]);
   });
 
-  test("persists data and metadata webhook filters from embedded commands", async () => {
+  test("persists data and metadata channel filters from embedded commands", async () => {
     const program = new Command();
     const output: string[] = [];
     const originalLog = console.log;
@@ -63,7 +64,7 @@ describe("commander adapter", () => {
       await program.parseAsync([
         "node",
         "testapp",
-        "webhooks",
+        "channels",
         "add",
         "node",
         "--id",
@@ -83,7 +84,7 @@ describe("commander adapter", () => {
         "--arg",
         "process.exit(0)",
       ]);
-      await program.parseAsync(["node", "testapp", "-j", "webhooks", "list"]);
+      await program.parseAsync(["node", "testapp", "-j", "channels", "list"]);
     } finally {
       console.log = originalLog;
     }
@@ -110,7 +111,7 @@ describe("commander adapter", () => {
       await program.parseAsync([
         "node",
         "testapp",
-        "webhooks",
+        "channels",
         "add",
         "node",
         "--id",
@@ -126,7 +127,7 @@ describe("commander adapter", () => {
         "--arg",
         "process.exit(0)",
       ]);
-      await program.parseAsync(["node", "testapp", "-j", "webhooks", "match", "todos-route", "--source", "todos", "--type", "task.created"]);
+      await program.parseAsync(["node", "testapp", "-j", "channels", "match", "todos-route", "--source", "todos", "--type", "task.created"]);
     } finally {
       console.log = originalLog;
     }

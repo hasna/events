@@ -1,6 +1,6 @@
 # @hasna/events
 
-Shared event envelopes, subscription config, webhook delivery, and command transports for Hasna open-source apps.
+Shared event envelopes, local channels, replay, and delivery transports for Hasna open-source apps.
 
 This package is local-first. By default it stores JSON files under `~/.hasna/events`:
 
@@ -82,9 +82,25 @@ replay` re-delivers envelopes; OpenAutomations is still responsible for deciding
 whether that delivery creates a new run, returns the existing idempotent run, or
 creates an explicit replay request.
 
+## OpenLoops Task Notifications
+
+`@hasna/events` is also notification ingress for OpenLoops task-created routes.
+It delivers `todos` envelopes to configured channels, but it does not import
+OpenLoops, create workflow invocations, own admission queue state, run agents,
+or decide worker retry/backpressure policy. OpenLoops is the consumer that
+handles an envelope, dedupes/upserts a work item, admits it when capacity is
+available, and records workflow run manifests under `.hasna/loops/runs`.
+
+Replay remains delivery-only. Replaying a `todos.task.created` or
+`task.created` envelope sends the event to matching channels again; OpenLoops
+decides whether that replay is ignored as an already-admitted task, resumes
+existing work, or creates an explicit replay work item.
+
 ## Channels And Filters
 
-Channels are reusable subscriptions. They can be enabled or disabled, filtered by source/type/subject/severity, and configured with transport-specific settings.
+Channels are reusable notification routes. They can be enabled or disabled,
+filtered by source/type/subject/severity, and configured with
+transport-specific settings.
 
 ```ts
 await events.addChannel({
@@ -93,7 +109,7 @@ await events.addChannel({
   transport: "webhook",
   filters: [{ type: "ticket.*", severity: ["warning", "error", "critical"] }],
   webhook: {
-    url: "https://example.com/webhooks/hasna",
+    url: "https://example.com/channels/hasna",
     secret: process.env.HASNA_WEBHOOK_SECRET,
   },
   retry: {
@@ -220,16 +236,16 @@ const events = new EventsClient({
 The package exposes `events` and `hasna-events`.
 
 ```bash
-events webhooks add https://example.com/webhooks/hasna \
+events channels add https://example.com/channels/hasna \
   --id ops \
   --type "ticket.*" \
   --secret "$HASNA_WEBHOOK_SECRET" \
   --retry-attempts 3 \
   --retry-backoff-ms 500
 
-events webhooks list
-events webhooks test ops
-events webhooks remove ops
+events channels list
+events channels test ops
+events channels remove ops
 ```
 
 Field filters can match nested `data` or `metadata` values. Plain
@@ -244,7 +260,7 @@ legacy source/type/subject filters. For field paths ending in `_path` or `.path`
 `*` matches one path segment and `**` matches recursively.
 
 ```bash
-events webhooks add loops \
+events channels add loops \
   --id open-source-task-route \
   --transport command \
   --source todos \
@@ -261,18 +277,18 @@ events webhooks add loops \
   --arg todos-task
 
 # Command args that begin with dashes can be passed either form:
-events webhooks add events --id json-route --transport command --arg --json
-events webhooks add events --id json-route --transport command --arg=--json
+events channels add events --id json-route --transport command --arg --json
+events channels add events --id json-route --transport command --arg=--json
 
 # For nested CLIs, put child positional args and flags after an explicit delimiter.
-events webhooks add events --id nested-route --transport command -- handle todos-task --json
+events channels add events --id nested-route --transport command -- handle todos-task --json
 
-events webhooks match open-source-task-route \
+events channels match open-source-task-route \
   --source todos \
   --type task.created \
   --metadata '{"project_path":"/home/hasna/workspace/hasna/opensource/open-events","route_enabled":true}'
 
-events webhooks test open-source-task-route --honor-filters \
+events channels test open-source-task-route --honor-filters \
   --source todos \
   --type task.created \
   --metadata '{"project_path":"/tmp/outside","route_enabled":true}'
@@ -307,7 +323,7 @@ Use `--json` for script-friendly output and `--dir <path>` for isolated data.
 
 ## App Integration Pattern
 
-Apps should keep event emission near durable state changes and avoid hardcoding app-specific webhooks. The common pattern is:
+Apps should keep event emission near durable state changes and avoid hardcoding app-specific channels. The common pattern is:
 
 ```ts
 import { EventsClient } from "@hasna/events";

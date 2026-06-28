@@ -51,11 +51,11 @@ afterEach(() => {
 
 describe("CLI smoke behavior", () => {
   test("prints nested group help", async () => {
-    const webhooksHelp = await runCli(["webhooks", "--help"]);
+    const webhooksHelp = await runCli(["channels", "--help"]);
     expect(webhooksHelp.exitCode).toBe(0);
     expect(webhooksHelp.stderr).toBe("");
-    expect(webhooksHelp.stdout).toContain("events webhooks");
-    expect(webhooksHelp.stdout).toContain("webhooks add");
+    expect(webhooksHelp.stdout).toContain("events channels");
+    expect(webhooksHelp.stdout).toContain("channels add");
 
     const eventsHelp = await runCli(["events", "--help"]);
     expect(eventsHelp.exitCode).toBe(0);
@@ -64,11 +64,19 @@ describe("CLI smoke behavior", () => {
     expect(eventsHelp.stdout).toContain("events emit");
   });
 
+  test("does not expose legacy webhooks command group", async () => {
+    const legacy = await runCli(["webhooks", "list"]);
+
+    expect(legacy.exitCode).not.toBe(0);
+    expect(legacy.stderr).toBe("");
+    expect(JSON.parse(legacy.stdout).error).toBe("Unknown command group: webhooks");
+  });
+
   test("prints nested command help without mutating channels or events", async () => {
-    const addHelp = await runCli(["webhooks", "add", "--help"]);
+    const addHelp = await runCli(["channels", "add", "--help"]);
     expect(addHelp.exitCode).toBe(0);
     expect(addHelp.stderr).toBe("");
-    expect(addHelp.stdout).toContain("webhooks add");
+    expect(addHelp.stdout).toContain("channels add");
     expect(addHelp.stdout).toContain("--arg <arg>");
     expect(addHelp.stdout).toContain("--timeout-ms <ms>");
     expect(addHelp.stdout).toContain("--retry-attempts <n>");
@@ -79,7 +87,7 @@ describe("CLI smoke behavior", () => {
     expect(emitHelp.stderr).toBe("");
     expect(emitHelp.stdout).toContain("events emit");
 
-    const listHooks = await runCli(["webhooks", "list"]);
+    const listHooks = await runCli(["channels", "list"]);
     expect(JSON.parse(listHooks.stdout)).toEqual([]);
 
     const listEvents = await runCli(["events", "list"]);
@@ -101,7 +109,7 @@ describe("CLI smoke behavior", () => {
     });
   });
 
-  test("adds, lists, tests, removes webhooks and emits, lists, replays events", async () => {
+  test("adds, lists, tests, removes channels and emits, lists, replays events", async () => {
     const requests: string[] = [];
     const server = Bun.serve({
       port: 0,
@@ -112,16 +120,16 @@ describe("CLI smoke behavior", () => {
     });
 
     try {
-      const add = await runCli(["webhooks", "add", `http://127.0.0.1:${server.port}`, "--id", "smoke", "--type", "smoke.*", "--secret", "secret"]);
+      const add = await runCli(["channels", "add", `http://127.0.0.1:${server.port}`, "--id", "smoke", "--type", "smoke.*", "--secret", "secret"]);
       expect(add.exitCode).toBe(0);
       expect(JSON.parse(add.stdout)).toMatchObject({ id: "smoke", transport: "webhook", webhook: { secret: "[REDACTED]" } });
 
-      const listHooks = await runCli(["webhooks", "list"]);
+      const listHooks = await runCli(["channels", "list"]);
       expect(listHooks.exitCode).toBe(0);
       expect(JSON.parse(listHooks.stdout)).toHaveLength(1);
       expect(JSON.parse(listHooks.stdout)[0].webhook.secret).toBe("[REDACTED]");
 
-      const testHook = await runCli(["webhooks", "test", "smoke"]);
+      const testHook = await runCli(["channels", "test", "smoke"]);
       expect(testHook.exitCode).toBe(0);
       expect(JSON.parse(testHook.stdout)).toMatchObject({ channelId: "smoke", status: "success" });
 
@@ -145,7 +153,7 @@ describe("CLI smoke behavior", () => {
       expect(replay.exitCode).toBe(0);
       expect(JSON.parse(replay.stdout).events.length).toBe(2);
 
-      const remove = await runCli(["webhooks", "remove", "smoke"]);
+      const remove = await runCli(["channels", "remove", "smoke"]);
       expect(remove.exitCode).toBe(0);
       expect(JSON.parse(remove.stdout)).toEqual({ removed: true });
       expect(requests.length).toBeGreaterThanOrEqual(2);
@@ -155,7 +163,7 @@ describe("CLI smoke behavior", () => {
   });
 
   test("status reports metadata only without event payloads or webhook secrets", async () => {
-    const add = await runCli(["webhooks", "add", "https://example.com/hook", "--id", "ops", "--secret", "top-secret-value"]);
+    const add = await runCli(["channels", "add", "https://example.com/hook", "--id", "ops", "--secret", "top-secret-value"]);
     expect(add.exitCode).toBe(0);
 
     const emit = await runCli([
@@ -192,7 +200,7 @@ describe("CLI smoke behavior", () => {
     expect(JSON.stringify(status)).not.toContain("top-secret-value");
     expect(JSON.stringify(status)).not.toContain("raw-token-value");
 
-    const webhooksStatusResult = await runCli(["webhooks", "status"]);
+    const webhooksStatusResult = await runCli(["channels", "status"]);
     expect(webhooksStatusResult.exitCode).toBe(0);
     const webhooksStatus = JSON.parse(webhooksStatusResult.stdout);
     expect(webhooksStatus).toMatchObject(status);
@@ -206,7 +214,7 @@ describe("CLI smoke behavior", () => {
     writeFileSync(receiverPath, `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(outputPath)}, process.env.HASNA_EVENT_JSON + "\\n");\n`);
 
     const add = await runCli([
-      "webhooks",
+      "channels",
       "add",
       "bun",
       "--id",
@@ -237,7 +245,7 @@ describe("CLI smoke behavior", () => {
 
   test("preserves command transport --arg values that begin with dashes", async () => {
     const add = await runCli([
-      "webhooks",
+      "channels",
       "add",
       "bun",
       "--id",
@@ -257,7 +265,7 @@ describe("CLI smoke behavior", () => {
 
   test("preserves command transport --arg= values that begin with dashes", async () => {
     const add = await runCli([
-      "webhooks",
+      "channels",
       "add",
       "bun",
       "--id",
@@ -276,7 +284,7 @@ describe("CLI smoke behavior", () => {
 
   test("preserves positional command transport child args", async () => {
     const add = await runCli([
-      "webhooks",
+      "channels",
       "add",
       "bun",
       "--id",
@@ -296,7 +304,7 @@ describe("CLI smoke behavior", () => {
 
   test("preserves command transport child args after explicit delimiter", async () => {
     const add = await runCli([
-      "webhooks",
+      "channels",
       "add",
       "bun",
       "--id",
@@ -316,13 +324,13 @@ describe("CLI smoke behavior", () => {
     });
   });
 
-  test("filters webhooks by data and metadata fields and previews matches", async () => {
+  test("filters channels by data and metadata fields and previews matches", async () => {
     const receiverPath = join(dataDir, "receiver.js");
     const outputPath = join(dataDir, "filtered-events.jsonl");
     writeFileSync(receiverPath, `const fs = require("node:fs"); fs.appendFileSync(${JSON.stringify(outputPath)}, process.env.HASNA_EVENT_JSON + "\\n");\n`);
 
     const add = await runCli([
-      "webhooks",
+      "channels",
       "add",
       "bun",
       "--id",
@@ -355,7 +363,7 @@ describe("CLI smoke behavior", () => {
     expect(saved.filters[0].data.tags).toBe("auto:*");
 
     const match = await runCli([
-      "webhooks",
+      "channels",
       "match",
       "opensource-route",
       "--source",
@@ -371,7 +379,7 @@ describe("CLI smoke behavior", () => {
     expect(JSON.parse(match.stdout).matched).toBe(true);
 
     const flatNoAutoDeny = await runCli([
-      "webhooks",
+      "channels",
       "match",
       "opensource-route",
       "--source",
@@ -387,7 +395,7 @@ describe("CLI smoke behavior", () => {
     expect(JSON.parse(flatNoAutoDeny.stdout).matched).toBe(false);
 
     const nestedMatch = await runCli([
-      "webhooks",
+      "channels",
       "match",
       "opensource-route",
       "--source",
@@ -403,7 +411,7 @@ describe("CLI smoke behavior", () => {
     expect(JSON.parse(nestedMatch.stdout).matched).toBe(false);
 
     const skippedTest = await runCli([
-      "webhooks",
+      "channels",
       "test",
       "opensource-route",
       "--honor-filters",

@@ -136,12 +136,12 @@ function printHelp(options: RunEventsCliOptions = {}): void {
   console.log(`${name} ${version()}
 
 Usage:
-  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
-  ${name} [--dir <path>] [--json] webhooks list
-  ${name} [--dir <path>] [--json] webhooks remove <id>
-  ${name} [--dir <path>] [--json] webhooks test <id>
-  ${name} [--dir <path>] [--json] webhooks match <id>
-  ${name} [--dir <path>] [--json] webhooks status
+  ${name} [--dir <path>] [--json] channels add <url|command> [options]
+  ${name} [--dir <path>] [--json] channels list
+  ${name} [--dir <path>] [--json] channels remove <id>
+  ${name} [--dir <path>] [--json] channels test <id>
+  ${name} [--dir <path>] [--json] channels match <id>
+  ${name} [--dir <path>] [--json] channels status
   ${name} [--dir <path>] [--json] status
   ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
   ${name} [--dir <path>] [--json] events list [--limit <n>]
@@ -151,17 +151,17 @@ Environment:
   HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}`);
 }
 
-function printWebhooksHelp(options: RunEventsCliOptions = {}): void {
+function printChannelsHelp(options: RunEventsCliOptions = {}): void {
   const name = commandName(options);
-  console.log(`${name} webhooks
+  console.log(`${name} channels
 
 Usage:
-  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
-  ${name} [--dir <path>] [--json] webhooks list
-  ${name} [--dir <path>] [--json] webhooks remove <id>
-  ${name} [--dir <path>] [--json] webhooks test <id>
-  ${name} [--dir <path>] [--json] webhooks match <id>
-  ${name} [--dir <path>] [--json] webhooks status
+  ${name} [--dir <path>] [--json] channels add <url|command> [options]
+  ${name} [--dir <path>] [--json] channels list
+  ${name} [--dir <path>] [--json] channels remove <id>
+  ${name} [--dir <path>] [--json] channels test <id>
+  ${name} [--dir <path>] [--json] channels match <id>
+  ${name} [--dir <path>] [--json] channels status
 
 Options:
   --id <id>                 Channel id for add
@@ -173,7 +173,7 @@ Options:
   --metadata <path=value|path!=value> Event metadata field filter, repeatable; strings, dot paths, array-member matching, * segment wildcard, ** recursive wildcard
   --data-json <path=json|path!=json> Event data field filter with typed JSON value
   --metadata-json <path=json|path!=json> Event metadata field filter with typed JSON value
-  --honor-filters           On webhooks test, skip delivery when the sample event does not match filters
+  --honor-filters           On channels test, skip delivery when the sample event does not match filters
   --transport <kind>        webhook or command
   --secret <secret>         Webhook signing secret
   --header <name=value>     Webhook header, repeatable
@@ -181,13 +181,13 @@ Options:
   --no-deliver              Available on events emit`);
 }
 
-function printWebhookAddHelp(options: RunEventsCliOptions = {}): void {
+function printChannelAddHelp(options: RunEventsCliOptions = {}): void {
   const name = commandName(options);
-  console.log(`${name} webhooks add
+  console.log(`${name} channels add
 
 Usage:
-  ${name} [--dir <path>] [--json] webhooks add <url|command> [options]
-  ${name} [--dir <path>] [--json] webhooks add <command> --transport command [options] -- [command-args...]
+  ${name} [--dir <path>] [--json] channels add <url|command> [options]
+  ${name} [--dir <path>] [--json] channels add <command> --transport command [options] -- [command-args...]
 
 Options:
   --id <id>                 Channel id
@@ -211,10 +211,10 @@ Options:
   --disabled                Create channel disabled
 
 Examples:
-  ${name} webhooks add https://example.com/webhooks/hasna --id ops --retry-attempts 3 --retry-backoff-ms 500
-  ${name} webhooks add bun --id command-hook --transport command --arg run --arg ./handler.ts --arg --json
-  ${name} webhooks add bun --id command-hook --transport command --arg=--json
-  ${name} webhooks add bun --id command-hook --transport command -- run ./handler.ts --json`);
+  ${name} channels add https://example.com/channels/hasna --id ops --retry-attempts 3 --retry-backoff-ms 500
+  ${name} channels add bun --id command-hook --transport command --arg run --arg ./handler.ts --arg --json
+  ${name} channels add bun --id command-hook --transport command --arg=--json
+  ${name} channels add bun --id command-hook --transport command -- run ./handler.ts --json`);
 }
 
 function printEventsHelp(options: RunEventsCliOptions = {}): void {
@@ -234,7 +234,7 @@ Options:
   --dedupe-key <key>        Deduplicate repeated events
   --data <json>             JSON object payload
   --metadata <json>         JSON object metadata
-  --no-deliver              Record without delivering webhooks
+  --no-deliver              Record without delivering channels
   --dry-run                 Preview replay matches without delivery`);
 }
 
@@ -262,20 +262,20 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
   const store = new JsonEventsStore(parsed.dir);
   const client = new EventsClient({ store });
 
-  if (group === "webhooks") {
+  if (group === "channels") {
     if (!command || command === "--help" || command === "-h") {
-      printWebhooksHelp(options);
+      printChannelsHelp(options);
       return;
     }
     if (command === "add" && (tail[0] === "--help" || tail[0] === "-h")) {
-      printWebhookAddHelp(options);
+      printChannelAddHelp(options);
       return;
     }
     if (tail.includes("--help") || tail.includes("-h")) {
-      printWebhooksHelp(options);
+      printChannelsHelp(options);
       return;
     }
-    await handleWebhooks(client, command, tail, parsed, options);
+    await handleChannels(client, command, tail, parsed, options);
     return;
   }
   if (group === "events") {
@@ -293,7 +293,7 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
   throw new Error(`Unknown command group: ${group}`);
 }
 
-async function handleWebhooks(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs, options: RunEventsCliOptions): Promise<void> {
+async function handleChannels(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs, options: RunEventsCliOptions): Promise<void> {
   if (command === "add") {
     const { args, delimiterArgs } = splitDelimiter(tail);
     const transport = (takeOption(args, "--transport") ?? "webhook") as TransportKind;
@@ -309,7 +309,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     const redactions = takeMany(args, "--redact");
     const filters = parseFilter(args);
     const target = args[0];
-    if (!target) throw new Error("webhooks add requires a URL or command target");
+    if (!target) throw new Error("channels add requires a URL or command target");
     const now = new Date().toISOString();
     const channel: ChannelConfig = {
       id,
@@ -360,7 +360,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
 
   if (command === "remove") {
     const id = tail[0];
-    if (!id) throw new Error("webhooks remove requires a channel id");
+    if (!id) throw new Error("channels remove requires a channel id");
     const removed = await client.removeChannel(id);
     output(parsed, { removed }, () => console.log(removed ? `Removed ${id}` : `Channel not found: ${id}`));
     return;
@@ -369,7 +369,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
   if (command === "test") {
     const args = [...tail];
     const id = args.shift();
-    if (!id) throw new Error("webhooks test requires a channel id");
+    if (!id) throw new Error("channels test requires a channel id");
     const honorFilters = takeFlag(args, "--honor-filters");
     const result = await client.testChannel(id, {
       source: takeOption(args, "--source") ?? options.source ?? "hasna.events",
@@ -386,7 +386,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
   if (command === "match") {
     const args = [...tail];
     const id = args.shift();
-    if (!id) throw new Error("webhooks match requires a channel id");
+    if (!id) throw new Error("channels match requires a channel id");
     const result = await client.matchChannel(id, {
       source: takeOption(args, "--source") ?? options.source ?? "hasna.events",
       type: takeOption(args, "--type") ?? "events.test",
@@ -399,7 +399,7 @@ async function handleWebhooks(client: EventsClient, command: string | undefined,
     return;
   }
 
-  throw new Error(`Unknown webhooks command: ${command ?? ""}`);
+  throw new Error(`Unknown channels command: ${command ?? ""}`);
 }
 
 function splitDelimiter(values: string[]): { args: string[]; delimiterArgs: string[] } {
