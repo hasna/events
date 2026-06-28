@@ -1,6 +1,6 @@
 # @hasna/events
 
-Shared event envelopes, subscription config, webhook delivery, and command dispatch for Hasna open-source apps.
+Shared event envelopes, subscription config, webhook delivery, and command transports for Hasna open-source apps.
 
 This package is local-first. By default it stores JSON files under `~/.hasna/events`:
 
@@ -123,6 +123,10 @@ window.
 ## Command Transport
 
 Command channels run a local process and pass the event on stdin and environment variables.
+For production task-created automation, route to tested package commands such as
+`loops events handle todos-task` rather than long-lived local scripts. Scripts
+like `scripts/handle-event.ts` are useful prototypes; repeated behavior should
+move into the owning `open-*` package with tests and bounded evidence.
 
 ```ts
 await events.addChannel({
