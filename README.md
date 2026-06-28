@@ -58,6 +58,30 @@ Envelope fields are:
 
 `source` should be the emitting app or bounded context. `type` should use dot notation such as `ticket.created`, `repo.synced`, or `check.failed`.
 
+## OpenAutomations Trigger Ingress
+
+`@hasna/events` is trigger ingress for OpenAutomations. It records and delivers
+event envelopes, but it does not own durable automation runs, action queues,
+approvals, DLQ state, or replay decisions. `@hasna/automations` consumes the
+same envelope shape and materializes matching events into durable automation
+runs.
+
+For automation-triggered events:
+
+- set `source` to the emitting app or bounded context
+- set `type` with dot notation, such as `ticket.created`
+- set `subject` when the event describes one stable domain object
+- set `dedupeKey` when the producer has a stable business identity
+- keep `id` stable for the specific emitted envelope
+- put only serializable trigger data in `data`
+- keep secrets out of `data` and `metadata`; pass secret references instead
+
+OpenAutomations derives idempotency from `dedupeKey` first and falls back to
+`id` when no dedupe key is present. Replaying events through `events events
+replay` re-delivers envelopes; OpenAutomations is still responsible for deciding
+whether that delivery creates a new run, returns the existing idempotent run, or
+creates an explicit replay request.
+
 ## Channels And Filters
 
 Channels are reusable subscriptions. They can be enabled or disabled, filtered by source/type/subject/severity, and configured with transport-specific settings.
