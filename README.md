@@ -10,6 +10,45 @@ This package is local-first. By default it stores JSON files under `~/.hasna/eve
 
 Override the data directory with `HASNA_EVENTS_DIR`, `HASNA_EVENTS_HOME`, or the CLI `--dir` flag.
 
+## Storage Runtime Contract
+
+The default runtime is local JSON files. It does not use local SQLite, remote
+Postgres, S3, AWS infrastructure, or live cloud mutation:
+
+```ts
+import { getEventsStatus } from "@hasna/events";
+
+const status = await getEventsStatus();
+
+console.log(status.storage);
+// {
+//   mode: "local-files",
+//   localFiles: true,
+//   localSqlite: false,
+//   remote: false,
+//   postgres: false,
+//   s3: false,
+//   aws: false,
+//   idempotency: "best-effort-local",
+//   replayCursors: true
+// }
+```
+
+Cloud-backed stores should implement the same `EventsStore` interface and, for
+durable event-bus use, the optional `appendEventOnce` and `listEventsPage`
+methods. `appendEventOnce` is the storage-layer hook for atomic idempotency by
+`id` or `dedupeKey`, such as a Postgres unique constraint or equivalent
+provider guarantee. `listEventsPage` returns an opaque cursor page for bounded
+replay. The local JSON store implements these hooks for deterministic local
+tests, but its idempotency is best-effort local file behavior, not a
+cross-process database lock.
+
+Remote Postgres/S3/AWS adapters should keep credentials and infrastructure
+provisioning outside this package configuration, report their storage mode in
+`status.storage`, and avoid emitting live external deliveries during store
+tests. Creating buckets, databases, secrets, migrations, or production data
+changes is an explicit deployment/approval step, not part of this local runtime.
+
 ## Install
 
 ```bash
@@ -306,8 +345,16 @@ events events emit ticket.created \
 
 events events list --limit 20
 events events replay --type ticket.created
+events events replay --type ticket.created --dry-run --limit 100
+events events replay --type ticket.created --cursor "$NEXT_CURSOR" --limit 100
 events events replay --dry-run
 ```
+
+Replay cursors are opaque and tied to the same filter set (`--id`, `--source`,
+and `--type`) used to produce them. Use the `nextCursor` returned by the
+previous JSON replay response rather than constructing cursor strings in
+callers. A replay without `--limit` or `--cursor` processes all matching events;
+use those flags when callers need bounded page-by-page replay.
 
 Machine-readable status:
 
@@ -315,9 +362,9 @@ Machine-readable status:
 events status --json
 ```
 
-The status contract reports event, channel, delivery, file, and transport counts
-only. It does not include event payloads, webhook signing secrets, command
-environment values, or channel targets.
+The status contract reports storage runtime, event, channel, delivery, file, and
+transport metadata only. It does not include event payloads, webhook signing
+secrets, command environment values, or channel targets.
 
 Use `--json` for script-friendly output and `--dir <path>` for isolated data.
 

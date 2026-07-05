@@ -168,6 +168,38 @@ describe("EventsClient", () => {
     expect(await client.listEvents()).toHaveLength(2);
   });
 
+  test("replays dry-run event pages with stable cursors", async () => {
+    const client = new EventsClient({ store: new JsonEventsStore(dataDir) });
+    await client.emit({ id: "evt_1", source: "repos", type: "repo.synced" }, { deliver: false });
+    await client.emit({ id: "evt_2", source: "repos", type: "repo.synced" }, { deliver: false });
+    await client.emit({ id: "evt_3", source: "tickets", type: "ticket.created" }, { deliver: false });
+    await client.emit({ id: "evt_4", source: "repos", type: "repo.synced" }, { deliver: false });
+
+    const first = await client.replay({ source: "repos", dryRun: true, limit: 2 });
+    const second = await client.replay({ source: "repos", dryRun: true, cursor: first.nextCursor, limit: 2 });
+
+    expect(first.events.map((event) => event.id)).toEqual(["evt_1", "evt_2"]);
+    expect(first.deliveries).toEqual([]);
+    expect(typeof first.nextCursor).toBe("string");
+    expect(first.hasMore).toBe(true);
+    expect(second.events.map((event) => event.id)).toEqual(["evt_4"]);
+    expect(second.nextCursor).toBeUndefined();
+    expect(second.hasMore).toBe(false);
+  });
+
+  test("replay without cursor or limit still returns all matching events", async () => {
+    const client = new EventsClient({ store: new JsonEventsStore(dataDir) });
+    for (let index = 0; index < 101; index += 1) {
+      await client.emit({ id: `evt_${index}`, source: "repos", type: "repo.synced" }, { deliver: false });
+    }
+
+    const result = await client.replay({ source: "repos", dryRun: true });
+
+    expect(result.events).toHaveLength(101);
+    expect(result.hasMore).toBe(false);
+    expect(result.nextCursor).toBeUndefined();
+  });
+
   test("sanitizes channel secrets for output", () => {
     const channel = sanitizeChannelForOutput({
       id: "hook",

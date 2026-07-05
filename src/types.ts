@@ -125,11 +125,45 @@ export interface EmitOptions {
   redactSensitiveData?: boolean;
 }
 
-export interface ReplayOptions {
+export interface EventPageOptions {
   eventId?: string;
   source?: string;
   type?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface EventPage {
+  events: EventEnvelope[];
+  cursor?: string;
+  nextCursor?: string;
+  hasMore: boolean;
+}
+
+export interface EventAppendOptions {
+  dedupe?: boolean;
+}
+
+export interface EventAppendResult<TData extends EventData = EventData> {
+  event: EventEnvelope<TData>;
+  stored: boolean;
+  deduped: boolean;
+  identity: {
+    id: string;
+    dedupeKey?: string;
+  };
+}
+
+export interface ReplayOptions extends EventPageOptions {
   dryRun?: boolean;
+}
+
+export interface ReplayResult {
+  events: EventEnvelope[];
+  deliveries: DeliveryResult[];
+  cursor?: string;
+  nextCursor?: string;
+  hasMore: boolean;
 }
 
 export interface StoredEventsData {
@@ -144,10 +178,28 @@ export interface EmitResult<TData extends EventData = EventData> {
   deduped: boolean;
 }
 
+export type EventsStorageMode = "local-files" | "local-sqlite" | "remote-postgres" | "remote-s3" | "remote-aws" | "custom";
+
+export interface EventsStoreRuntime {
+  mode: EventsStorageMode;
+  name: string;
+  remote: boolean;
+  localFiles: boolean;
+  localSqlite: boolean;
+  postgres: boolean;
+  s3: boolean;
+  aws: boolean;
+  durable: boolean;
+  idempotency: "best-effort-local" | "atomic-store" | "consumer-owned";
+  replayCursors: boolean;
+  description: string;
+}
+
 export interface EventsStatus {
   service: "events";
   schemaVersion: "1.0";
   dataDir: string;
+  storage: EventsStoreRuntime;
   env: {
     primary: "HASNA_EVENTS_DIR";
     fallback: "HASNA_EVENTS_HOME";

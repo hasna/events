@@ -3,17 +3,21 @@ import type {
   ChannelConfig,
   DeliveryAttempt,
   DeliveryResult,
+  EventAppendResult,
   EmitOptions,
   EmitResult,
   EventEnvelope,
   EventFilter,
+  EventPage,
+  EventPageOptions,
   EventInput,
   EventRedactor,
   ReplayOptions,
+  ReplayResult,
   RetryPolicy,
 } from "./types.js";
 import { channelMatchesEvent } from "./filter.js";
-import { JsonEventsStore, type EventsStore } from "./storage.js";
+import { decodeLocalJsonEventCursor, encodeLocalJsonEventCursor, JsonEventsStore, normalizeEventPageLimit, type EventsStore } from "./storage.js";
 import { createDeliveryResult, dispatchChannel, type TransportDispatchOptions } from "./transports.js";
 
 export * from "./types.js";
@@ -88,19 +92,37 @@ export class EventsClient {
     const event = options.redactSensitiveData === false
       ? createEvent(input)
       : redactSensitiveKeys(createEvent(input));
-    if (options.dedupe !== false) {
-      const existing = await this.store.findEventByIdentity({ id: input.id, dedupeKey: event.dedupeKey });
-      if (existing) {
-        return { event: existing as EventEnvelope<TData>, deliveries: [], deduped: true };
-      }
+    const append = await this.appendEvent(event, { dedupe: options.dedupe !== false });
+    if (append.deduped) {
+      return { event: append.event as EventEnvelope<TData>, deliveries: [], deduped: true };
     }
-    await this.store.appendEvent(event);
-    const deliveries = options.deliver === false ? [] : await this.deliver(event);
-    return { event, deliveries, deduped: false };
+    const deliveries = options.deliver === false ? [] : await this.deliver(append.event);
+    return { event: append.event as EventEnvelope<TData>, deliveries, deduped: false };
   }
 
-  async listEvents(): Promise<EventEnvelope[]> {
-    return this.store.listEvents();
+  async listEvents(options: EventPageOptions = {}): Promise<EventEnvelope[]> {
+    if (Object.keys(options).length === 0) return this.store.listEvents();
+    return queryClientEvents(await this.store.listEvents(), options);
+  }
+
+  async listEventsPage(options: EventPageOptions = {}): Promise<EventPage> {
+    if (this.store.listEventsPage) return this.store.listEventsPage(options);
+    const events = queryClientEvents(await this.store.listEvents(), {
+      eventId: options.eventId,
+      source: options.source,
+      type: options.type,
+    });
+    const offset = decodeLocalJsonEventCursor(options.cursor, options);
+    const limit = normalizeEventPageLimit(options.limit);
+    const pageEvents = events.slice(offset, offset + limit);
+    const nextOffset = offset + pageEvents.length;
+    const hasMore = nextOffset < events.length;
+    return {
+      events: pageEvents,
+      cursor: options.cursor,
+      nextCursor: hasMore ? encodeLocalJsonEventCursor(nextOffset, options) : undefined,
+      hasMore,
+    };
   }
 
   async listDeliveries(): Promise<DeliveryResult[]> {
@@ -170,19 +192,43 @@ export class EventsClient {
     return result;
   }
 
-  async replay(options: ReplayOptions = {}): Promise<{ events: EventEnvelope[]; deliveries: DeliveryResult[] }> {
-    const events = (await this.store.listEvents()).filter((event) => {
-      if (options.eventId && event.id !== options.eventId) return false;
-      if (options.source && event.source !== options.source) return false;
-      if (options.type && event.type !== options.type) return false;
-      return true;
-    });
-    if (options.dryRun) return { events, deliveries: [] };
+  async replay(options: ReplayOptions = {}): Promise<ReplayResult> {
+    const page: EventPage = options.cursor || options.limit !== undefined
+      ? await this.listEventsPage(options)
+      : { events: await this.listEvents(options), hasMore: false };
+    if (options.dryRun) return { events: page.events, deliveries: [], cursor: page.cursor, nextCursor: page.nextCursor, hasMore: page.hasMore };
     const deliveries: DeliveryResult[] = [];
-    for (const event of events) {
+    for (const event of page.events) {
       deliveries.push(...await this.deliver(event));
     }
-    return { events, deliveries };
+    return { events: page.events, deliveries, cursor: page.cursor, nextCursor: page.nextCursor, hasMore: page.hasMore };
+  }
+
+  private async appendEvent<TData extends Record<string, unknown>>(
+    event: EventEnvelope<TData>,
+    options: { dedupe: boolean },
+  ): Promise<EventAppendResult<TData>> {
+    if (this.store.appendEventOnce) {
+      return this.store.appendEventOnce(event, { dedupe: options.dedupe }) as Promise<EventAppendResult<TData>>;
+    }
+    if (options.dedupe) {
+      const existing = await this.store.findEventByIdentity({ id: event.id, dedupeKey: event.dedupeKey });
+      if (existing) {
+        return {
+          event: existing as EventEnvelope<TData>,
+          stored: false,
+          deduped: true,
+          identity: { id: existing.id, dedupeKey: existing.dedupeKey },
+        };
+      }
+    }
+    const stored = await this.store.appendEvent(event);
+    return {
+      event: stored as EventEnvelope<TData>,
+      stored: true,
+      deduped: false,
+      identity: { id: stored.id, dedupeKey: stored.dedupeKey },
+    };
   }
 
   private async applyRedaction(event: EventEnvelope, channel: ChannelConfig): Promise<EventEnvelope> {
@@ -263,6 +309,16 @@ function setPath(input: Record<string, unknown>, path: string, replacement: stri
   }
   const last = parts.at(-1);
   if (last && last in cursor) cursor[last] = replacement;
+}
+
+function queryClientEvents(events: EventEnvelope[], options: EventPageOptions): EventEnvelope[] {
+  let rows = events;
+  if (options.eventId) rows = rows.filter((event) => event.id === options.eventId);
+  if (options.source) rows = rows.filter((event) => event.source === options.source);
+  if (options.type) rows = rows.filter((event) => event.type === options.type);
+  if (options.cursor) rows = rows.slice(decodeLocalJsonEventCursor(options.cursor, options));
+  if (options.limit !== undefined) rows = rows.slice(0, normalizeEventPageLimit(options.limit));
+  return rows;
 }
 
 function normalizeTime(value?: string | Date): string {

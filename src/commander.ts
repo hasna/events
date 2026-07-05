@@ -296,14 +296,16 @@ export function registerEventCommands(program: CommanderLike, options: RegisterE
     for (const event of rows) console.log(`${event.time}\t${event.id}\t${event.source}\t${event.type}\t${event.severity}`);
   });
 
-  events.command("replay").description("Replay recorded events").option("--id <id>", "Replay one event id").option("--source <source>", "Filter by source").option("--type <type>", "Filter by type").option("--dry-run", "Preview without delivery", false).option("-j, --json", "Print JSON output", false).action(async (actionOptions: { id?: string; source?: string; type?: string; dryRun?: boolean; json?: boolean }, command?: CommanderCommandLike) => {
+  events.command("replay").description("Replay recorded events").option("--id <id>", "Replay one event id").option("--source <source>", "Filter by source").option("--type <type>", "Filter by type").option("--cursor <cursor>", "Opaque replay cursor from a previous page").option("--limit <n>", "Maximum events to replay", parseNumber).option("--dry-run", "Preview without delivery", false).option("-j, --json", "Print JSON output", false).action(async (actionOptions: { id?: string; source?: string; type?: string; cursor?: string; limit?: number; dryRun?: boolean; json?: boolean }, command?: CommanderCommandLike) => {
     const result = await createClient(options).replay({
       eventId: actionOptions.id,
       source: actionOptions.source,
       type: actionOptions.type,
+      cursor: actionOptions.cursor,
+      limit: actionOptions.limit,
       dryRun: actionOptions.dryRun,
     });
-    print(result, wantsJson(actionOptions, command), `Replayed ${result.events.length} event(s), ${result.deliveries.length} delivery result(s)`);
+    print(result, wantsJson(actionOptions, command), replaySummary(result.events.length, result.deliveries.length, result.nextCursor));
   });
 
   return events;
@@ -323,4 +325,9 @@ function parseNumber(value: string): number {
 function collectValues(value: string, previous: string[]): string[] {
   previous.push(value);
   return previous;
+}
+
+function replaySummary(events: number, deliveries: number, nextCursor: string | undefined): string {
+  const suffix = nextCursor ? `, next cursor: ${nextCursor}` : "";
+  return `Replayed ${events} event(s), ${deliveries} delivery result(s)${suffix}`;
 }
