@@ -145,7 +145,7 @@ Usage:
   ${name} [--dir <path>] [--json] status
   ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
   ${name} [--dir <path>] [--json] events list [--limit <n>]
-  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--cursor <cursor>] [--limit <n>] [--dry-run]
 
 Environment:
   HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}`);
@@ -224,7 +224,7 @@ function printEventsHelp(options: RunEventsCliOptions = {}): void {
 Usage:
   ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
   ${name} [--dir <path>] [--json] events list [--limit <n>]
-  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--dry-run]
+  ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--cursor <cursor>] [--limit <n>] [--dry-run]
 
 Options:
   --source <source>         Event source${options.source ? ` (default: ${options.source})` : ""}
@@ -235,6 +235,8 @@ Options:
   --data <json>             JSON object payload
   --metadata <json>         JSON object metadata
   --no-deliver              Record without delivering channels
+  --cursor <cursor>         Opaque cursor returned by a previous replay page
+  --limit <n>               Maximum events to replay
   --dry-run                 Preview replay matches without delivery`);
 }
 
@@ -460,9 +462,11 @@ async function handleEvents(client: EventsClient, command: string | undefined, t
       eventId: takeOption(args, "--id"),
       source: takeOption(args, "--source"),
       type: takeOption(args, "--type"),
+      cursor: takeOption(args, "--cursor"),
+      limit: numberOption(takeOption(args, "--limit")),
       dryRun: takeFlag(args, "--dry-run"),
     });
-    output(parsed, result, () => console.log(`Replayed ${result.events.length} event(s), ${result.deliveries.length} delivery result(s)`));
+    output(parsed, result, () => console.log(replaySummary(result.events.length, result.deliveries.length, result.nextCursor)));
     return;
   }
 
@@ -481,6 +485,11 @@ function severityOption(value: string | undefined) {
   const allowed = new Set(["debug", "info", "notice", "warning", "error", "critical"]);
   if (!allowed.has(value)) throw new Error(`Invalid severity: ${value}`);
   return value as "debug" | "info" | "notice" | "warning" | "error" | "critical";
+}
+
+function replaySummary(events: number, deliveries: number, nextCursor: string | undefined): string {
+  const suffix = nextCursor ? `, next cursor: ${nextCursor}` : "";
+  return `Replayed ${events} event(s), ${deliveries} delivery result(s)${suffix}`;
 }
 
 if (import.meta.main) {

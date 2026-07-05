@@ -134,4 +134,33 @@ describe("commander adapter", () => {
 
     expect(JSON.parse(output.at(-1) ?? "{}").matched).toBe(true);
   });
+
+  test("embedded replay supports cursor paging", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const originalLog = console.log;
+    program.exitOverride();
+    program.option("-j, --json", "Output JSON");
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.one", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.two", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "-j", "events", "replay", "--dry-run", "--limit", "1"]);
+      const firstPage = JSON.parse(output.at(-1) ?? "{}");
+      await program.parseAsync(["node", "testapp", "-j", "events", "replay", "--dry-run", "--cursor", firstPage.nextCursor, "--limit", "1"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const firstPage = JSON.parse(output.at(-2) ?? "{}");
+    const secondPage = JSON.parse(output.at(-1) ?? "{}");
+    expect(firstPage.events).toHaveLength(1);
+    expect(firstPage.hasMore).toBe(true);
+    expect(secondPage.events).toHaveLength(1);
+    expect(secondPage.events[0].id).not.toBe(firstPage.events[0].id);
+    expect(secondPage.hasMore).toBe(false);
+  });
 });

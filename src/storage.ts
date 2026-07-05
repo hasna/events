@@ -1,11 +1,26 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { Buffer } from "node:buffer";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ChannelConfig, DeliveryResult, EventEnvelope, EventsStatus, StoredEventsData } from "./types.js";
+import type {
+  ChannelConfig,
+  DeliveryResult,
+  EventAppendOptions,
+  EventAppendResult,
+  EventEnvelope,
+  EventPage,
+  EventPageOptions,
+  EventsStatus,
+  EventsStoreRuntime,
+  StoredEventsData,
+} from "./types.js";
 
 export const HASNA_EVENTS_DIR_ENV = "HASNA_EVENTS_DIR";
 export const HASNA_EVENTS_HOME_ENV = "HASNA_EVENTS_HOME";
+export const LOCAL_JSON_EVENT_CURSOR_PREFIX = "local-json-v1:";
+export const DEFAULT_EVENT_PAGE_LIMIT = 100;
+export const MAX_EVENT_PAGE_LIMIT = 1000;
 
 export function getEventsDataDir(override?: string): string {
   return override || process.env[HASNA_EVENTS_DIR_ENV] || process.env[HASNA_EVENTS_HOME_ENV] || join(homedir(), ".hasna", "events");
@@ -19,13 +34,16 @@ export function getActiveEventsDirEnv(): EventsStatus["env"]["active"] {
 
 export interface EventsStore {
   dataDir: string;
+  runtime?: EventsStoreRuntime;
   init(): Promise<void>;
   addChannel(channel: ChannelConfig): Promise<ChannelConfig>;
   listChannels(): Promise<ChannelConfig[]>;
   getChannel(id: string): Promise<ChannelConfig | undefined>;
   removeChannel(id: string): Promise<boolean>;
   appendEvent(event: EventEnvelope): Promise<EventEnvelope>;
-  listEvents(): Promise<EventEnvelope[]>;
+  appendEventOnce?(event: EventEnvelope, options?: EventAppendOptions): Promise<EventAppendResult>;
+  listEvents(options?: EventPageOptions): Promise<EventEnvelope[]>;
+  listEventsPage?(options?: EventPageOptions): Promise<EventPage>;
   findEventByIdentity(identity: { id?: string; dedupeKey?: string }): Promise<EventEnvelope | undefined>;
   appendDelivery(result: DeliveryResult): Promise<DeliveryResult>;
   listDeliveries(): Promise<DeliveryResult[]>;
@@ -33,12 +51,14 @@ export interface EventsStore {
 
 export class JsonEventsStore implements EventsStore {
   dataDir: string;
+  runtime: EventsStoreRuntime;
   private channelsPath: string;
   private eventsPath: string;
   private deliveriesPath: string;
 
   constructor(dataDir = getEventsDataDir()) {
     this.dataDir = dataDir;
+    this.runtime = localJsonRuntime(dataDir);
     this.channelsPath = join(dataDir, "channels.json");
     this.eventsPath = join(dataDir, "events.json");
     this.deliveriesPath = join(dataDir, "deliveries.json");
@@ -91,17 +111,61 @@ export class JsonEventsStore implements EventsStore {
     return event;
   }
 
-  async listEvents(): Promise<EventEnvelope[]> {
+  async appendEventOnce(event: EventEnvelope, options: EventAppendOptions = {}): Promise<EventAppendResult> {
     await this.init();
-    return this.readJson<EventEnvelope[]>(this.eventsPath, []);
+    const events = await this.readJson<EventEnvelope[]>(this.eventsPath, []);
+    const dedupe = options.dedupe !== false;
+    if (dedupe) {
+      const existing = findEventByIdentity(events, { id: event.id, dedupeKey: event.dedupeKey });
+      if (existing) {
+        return {
+          event: existing,
+          stored: false,
+          deduped: true,
+          identity: { id: existing.id, dedupeKey: existing.dedupeKey },
+        };
+      }
+    }
+    events.push(event);
+    await this.writeJson(this.eventsPath, events);
+    return {
+      event,
+      stored: true,
+      deduped: false,
+      identity: { id: event.id, dedupeKey: event.dedupeKey },
+    };
+  }
+
+  async listEvents(options: EventPageOptions = {}): Promise<EventEnvelope[]> {
+    await this.init();
+    const events = await this.readJson<EventEnvelope[]>(this.eventsPath, []);
+    return queryEvents(events, options);
+  }
+
+  async listEventsPage(options: EventPageOptions = {}): Promise<EventPage> {
+    await this.init();
+    const events = await this.readJson<EventEnvelope[]>(this.eventsPath, []);
+    const queried = queryEvents(events, {
+      eventId: options.eventId,
+      source: options.source,
+      type: options.type,
+    });
+    const offset = decodeLocalJsonEventCursor(options.cursor, options);
+    const limit = normalizeEventPageLimit(options.limit);
+    const pageEvents = queried.slice(offset, offset + limit);
+    const nextOffset = offset + pageEvents.length;
+    const hasMore = nextOffset < queried.length;
+    return {
+      events: pageEvents,
+      cursor: options.cursor,
+      nextCursor: hasMore ? encodeLocalJsonEventCursor(nextOffset, options) : undefined,
+      hasMore,
+    };
   }
 
   async findEventByIdentity(identity: { id?: string; dedupeKey?: string }): Promise<EventEnvelope | undefined> {
     const events = await this.listEvents();
-    return events.find((event) => (
-      (identity.id !== undefined && event.id === identity.id) ||
-      (identity.dedupeKey !== undefined && event.dedupeKey === identity.dedupeKey)
-    ));
+    return findEventByIdentity(events, identity);
   }
 
   async appendDelivery(result: DeliveryResult): Promise<DeliveryResult> {
@@ -151,6 +215,89 @@ export class JsonEventsStore implements EventsStore {
   }
 }
 
+export function localJsonRuntime(dataDir = getEventsDataDir()): EventsStoreRuntime {
+  return {
+    mode: "local-files",
+    name: "json-events-store",
+    remote: false,
+    localFiles: true,
+    localSqlite: false,
+    postgres: false,
+    s3: false,
+    aws: false,
+    durable: true,
+    idempotency: "best-effort-local",
+    replayCursors: true,
+    description: `Local JSON files in ${dataDir}; no SQLite, Postgres, S3, or AWS runtime is configured by this store.`,
+  };
+}
+
+export function encodeLocalJsonEventCursor(offset: number, options: EventPageOptions = {}): string {
+  if (!Number.isInteger(offset) || offset < 0) throw new Error(`Invalid event cursor offset: ${offset}`);
+  const payload: LocalJsonEventCursor = {
+    offset,
+    eventId: options.eventId,
+    source: options.source,
+    type: options.type,
+  };
+  return `${LOCAL_JSON_EVENT_CURSOR_PREFIX}${Buffer.from(JSON.stringify(payload), "utf-8").toString("base64url")}`;
+}
+
+export function decodeLocalJsonEventCursor(cursor: string | undefined, options: EventPageOptions = {}): number {
+  if (!cursor) return 0;
+  if (!cursor.startsWith(LOCAL_JSON_EVENT_CURSOR_PREFIX)) throw new Error(`Invalid local JSON event cursor: ${cursor}`);
+  const rawPayload = cursor.slice(LOCAL_JSON_EVENT_CURSOR_PREFIX.length);
+  let payload: LocalJsonEventCursor;
+  try {
+    payload = JSON.parse(Buffer.from(rawPayload, "base64url").toString("utf-8")) as LocalJsonEventCursor;
+  } catch {
+    throw new Error(`Invalid local JSON event cursor: ${cursor}`);
+  }
+  const offset = payload.offset;
+  if (!Number.isInteger(offset) || offset < 0) throw new Error(`Invalid local JSON event cursor: ${cursor}`);
+  assertCursorFilter("eventId", payload.eventId, options.eventId);
+  assertCursorFilter("source", payload.source, options.source);
+  assertCursorFilter("type", payload.type, options.type);
+  return offset;
+}
+
+export function normalizeEventPageLimit(limit: number | undefined): number {
+  if (limit === undefined) return DEFAULT_EVENT_PAGE_LIMIT;
+  if (!Number.isInteger(limit) || limit < 1) throw new Error(`Event page limit must be a positive integer, got ${limit}`);
+  return Math.min(limit, MAX_EVENT_PAGE_LIMIT);
+}
+
+function queryEvents(events: EventEnvelope[], options: EventPageOptions): EventEnvelope[] {
+  let rows = events;
+  if (options.eventId) rows = rows.filter((event) => event.id === options.eventId);
+  if (options.source) rows = rows.filter((event) => event.source === options.source);
+  if (options.type) rows = rows.filter((event) => event.type === options.type);
+  if (options.cursor) {
+    const offset = decodeLocalJsonEventCursor(options.cursor, options);
+    rows = rows.slice(offset);
+  }
+  if (options.limit !== undefined) rows = rows.slice(0, normalizeEventPageLimit(options.limit));
+  return rows;
+}
+
+interface LocalJsonEventCursor {
+  offset: number;
+  eventId?: string;
+  source?: string;
+  type?: string;
+}
+
+function assertCursorFilter(name: keyof Omit<LocalJsonEventCursor, "offset">, cursorValue: string | undefined, optionValue: string | undefined): void {
+  if (cursorValue !== optionValue) throw new Error(`Local JSON event cursor ${name} filter mismatch`);
+}
+
+function findEventByIdentity(events: EventEnvelope[], identity: { id?: string; dedupeKey?: string }): EventEnvelope | undefined {
+  return events.find((event) => (
+    (identity.id !== undefined && event.id === identity.id) ||
+    (identity.dedupeKey !== undefined && event.dedupeKey === identity.dedupeKey)
+  ));
+}
+
 export async function getEventsStatus(dataDir?: string): Promise<EventsStatus> {
   const store = new JsonEventsStore(dataDir);
   await store.init();
@@ -168,6 +315,7 @@ export async function getEventsStatus(dataDir?: string): Promise<EventsStatus> {
     service: "events",
     schemaVersion: "1.0",
     dataDir: store.dataDir,
+    storage: store.runtime,
     env: {
       primary: HASNA_EVENTS_DIR_ENV,
       fallback: HASNA_EVENTS_HOME_ENV,

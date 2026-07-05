@@ -21,6 +21,22 @@ async function runCli(args: string[]) {
   return { stdout, stderr, exitCode };
 }
 
+async function runCliText(args: string[]) {
+  const child = Bun.spawn({
+    cmd: ["bun", "run", "src/cli/index.ts", "--dir", dataDir, ...args],
+    cwd: process.cwd(),
+    env: { ...process.env, HASNA_EVENTS_DIR: dataDir },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
 async function runEmbeddedCli(args: string[]) {
   const child = Bun.spawn({
     cmd: [
@@ -152,6 +168,24 @@ describe("CLI smoke behavior", () => {
       const replay = await runCli(["events", "replay", "--dry-run"]);
       expect(replay.exitCode).toBe(0);
       expect(JSON.parse(replay.stdout).events.length).toBe(2);
+
+      const replayPage = await runCli(["events", "replay", "--dry-run", "--limit", "1"]);
+      expect(replayPage.exitCode).toBe(0);
+      const firstPage = JSON.parse(replayPage.stdout);
+      expect(firstPage.events).toHaveLength(1);
+      expect(firstPage.hasMore).toBe(true);
+      expect(typeof firstPage.nextCursor).toBe("string");
+
+      const replayNextPage = await runCli(["events", "replay", "--dry-run", "--cursor", firstPage.nextCursor, "--limit", "1"]);
+      expect(replayNextPage.exitCode).toBe(0);
+      const secondPage = JSON.parse(replayNextPage.stdout);
+      expect(secondPage.events).toHaveLength(1);
+      expect(secondPage.events[0].id).not.toBe(firstPage.events[0].id);
+      expect(secondPage.hasMore).toBe(false);
+
+      const replayHumanPage = await runCliText(["events", "replay", "--dry-run", "--limit", "1"]);
+      expect(replayHumanPage.exitCode).toBe(0);
+      expect(replayHumanPage.stdout).toContain("next cursor:");
 
       const remove = await runCli(["channels", "remove", "smoke"]);
       expect(remove.exitCode).toBe(0);
