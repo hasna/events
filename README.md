@@ -127,7 +127,7 @@ const client = new EventsClient({ catalog, validateCatalogTypes: true });
 await client.emit({
   source: "open-publish",
   type: "release.published",
-  data: { appId: "open-todos", package: "@hasna/todos", version: "0.11.63" },
+  data: { appId: "open-todos" },
 });
 ```
 
