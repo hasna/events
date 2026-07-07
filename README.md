@@ -97,6 +97,51 @@ Envelope fields are:
 
 `source` should be the emitting app or bounded context. `type` should use dot notation such as `ticket.created`, `repo.synced`, or `check.failed`.
 
+## Typed Event Catalog (Distribution Events)
+
+`@hasna/events/catalog` binds well-known envelope `type` strings to the
+`@hasna/contracts` schema ids their `data` payloads mirror, and provides an
+OPT-IN emit-time validator hook.
+
+Distribution event types (`DISTRIBUTION_EVENT_TYPES`):
+
+| Event type | Contracts schema (`data` mirror) |
+| --- | --- |
+| `release.published` | `hasna.release.v1` |
+| `release.rollout.started` | `hasna.rollout_record.v1` |
+| `release.rollout.completed` | `hasna.rollout_record.v1` |
+| `release.rollout.failed` | `hasna.rollout_record.v1` |
+| `app.installed` | `hasna.rollout_record.v1` |
+| `announcement.sent` | `hasna.announcement.v1` |
+| `feedback.created` | `hasna.feedback.v1` |
+| `feedback.triaged` | `hasna.feedback.v1` |
+
+```ts
+import { EventsClient, EventTypeCatalog, registerDistributionEventTypes } from "@hasna/events";
+
+const catalog = registerDistributionEventTypes(new EventTypeCatalog());
+const client = new EventsClient({ catalog, validateCatalogTypes: true });
+
+// Registered type with an invalid payload throws EventValidationError
+// BEFORE the event is stored or delivered.
+await client.emit({
+  source: "open-publish",
+  type: "release.published",
+  data: { appId: "open-todos" },
+});
+```
+
+Validation is fully backward compatible:
+
+- It is OFF by default (`validateCatalogTypes` defaults to `false`).
+- Unregistered/free-form event types ALWAYS pass, even when validation is on.
+- A per-emit `validate` option overrides the client setting in both directions.
+
+Payload types (`ReleasePublishedData`, `RolloutData`, `AppInstalledData`,
+`AnnouncementSentData`, `FeedbackCreatedData`, `FeedbackTriagedData`) are
+dependency-free structural mirrors of the contracts schemas; this package does
+not depend on `@hasna/contracts` at runtime.
+
 ## OpenAutomations Trigger Ingress
 
 `@hasna/events` is trigger ingress for OpenAutomations. It records and delivers

@@ -19,17 +19,31 @@ import type {
 import { channelMatchesEvent } from "./filter.js";
 import { decodeLocalJsonEventCursor, encodeLocalJsonEventCursor, JsonEventsStore, normalizeEventPageLimit, type EventsStore } from "./storage.js";
 import { createDeliveryResult, dispatchChannel, type TransportDispatchOptions } from "./transports.js";
+import { defaultEventTypeCatalog, type EventTypeCatalog } from "./catalog.js";
 
 export * from "./types.js";
 export * from "./storage.js";
 export * from "./filter.js";
 export * from "./signing.js";
 export * from "./transports.js";
+export * from "./catalog.js";
 
 export interface EventsClientOptions extends TransportDispatchOptions {
   store?: EventsStore;
   dataDir?: string;
   redactors?: EventRedactor[];
+  /**
+   * Event type catalog used by the opt-in emit-time validator hook. Defaults
+   * to the shared `defaultEventTypeCatalog`.
+   */
+  catalog?: EventTypeCatalog;
+  /**
+   * Opt-in: when true, emitted events whose `type` is registered in the
+   * catalog are validated and rejected (with `EventValidationError`) before
+   * they are stored or delivered. Unregistered/free-form types always pass.
+   * Defaults to false, so existing emitters are untouched.
+   */
+  validateCatalogTypes?: boolean;
 }
 
 export interface ChannelMatchResult {
@@ -64,11 +78,15 @@ export class EventsClient {
   private store: EventsStore;
   private redactors: EventRedactor[];
   private transportOptions: TransportDispatchOptions;
+  private catalog: EventTypeCatalog;
+  private validateCatalogTypes: boolean;
 
   constructor(options: EventsClientOptions = {}) {
     this.store = options.store ?? new JsonEventsStore(options.dataDir);
     this.redactors = options.redactors ?? [];
     this.transportOptions = { fetchImpl: options.fetchImpl };
+    this.catalog = options.catalog ?? defaultEventTypeCatalog;
+    this.validateCatalogTypes = options.validateCatalogTypes ?? false;
   }
 
   async addChannel(input: Omit<ChannelConfig, "createdAt" | "updatedAt"> & Partial<Pick<ChannelConfig, "createdAt" | "updatedAt">>): Promise<ChannelConfig> {
@@ -92,6 +110,12 @@ export class EventsClient {
     const event = options.redactSensitiveData === false
       ? createEvent(input)
       : redactSensitiveKeys(createEvent(input));
+    if (options.validate ?? this.validateCatalogTypes) {
+      // Opt-in hook: throws EventValidationError for registered types with an
+      // invalid payload BEFORE the event is stored or delivered.
+      // Unregistered/free-form types always pass.
+      this.catalog.assertEventValid(event);
+    }
     const append = await this.appendEvent(event, { dedupe: options.dedupe !== false });
     if (append.deduped) {
       return { event: append.event as EventEnvelope<TData>, deliveries: [], deduped: true };

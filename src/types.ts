@@ -123,6 +123,14 @@ export interface EmitOptions {
   deliver?: boolean;
   dedupe?: boolean;
   redactSensitiveData?: boolean;
+  /**
+   * Per-emit override for the opt-in catalog validator hook. When true the
+   * event is validated against the client's `EventTypeCatalog` before it is
+   * stored or delivered (types not registered in the catalog always pass);
+   * when false validation is skipped even if the client enabled
+   * `validateCatalogTypes`. Defaults to the client-level setting (off).
+   */
+  validate?: boolean;
 }
 
 export interface EventPageOptions {
