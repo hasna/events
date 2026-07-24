@@ -51,6 +51,21 @@ function print(value: unknown, json: boolean, text: string): void {
   else console.log(text);
 }
 
+/**
+ * Report an action failure without letting the error escape the commander
+ * action handler. Host programs that embed these commands may not wrap
+ * `parseAsync` in a try/catch (unlike the standalone `events` CLI), so an
+ * uncaught throw would surface as a raw stack trace and ignore `--json`.
+ * Emitting a clean `{ error }` payload here keeps not-found and other action
+ * failures consistent with the other channel commands (e.g. `channels remove`).
+ */
+function fail(error: unknown, json: boolean): void {
+  const message = error instanceof Error ? error.message : String(error);
+  if (json) console.log(JSON.stringify({ error: message }, null, 2));
+  else console.error(message);
+  process.exitCode = 1;
+}
+
 function hasJsonOption(options: {
   json?: boolean;
   opts?: () => { json?: boolean };
@@ -201,15 +216,20 @@ export function registerChannelCommands(program: CommanderLike, options: Registe
     .option("--honor-filters", "Skip delivery when the sample event does not match channel filters", false)
     .option("-j, --json", "Print JSON output", false)
     .action(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; honorFilters?: boolean; json?: boolean }, command?: CommanderCommandLike) => {
-      const result = await createClient(options).testChannel(id, {
-        source: actionOptions.source ?? options.source,
-        type: actionOptions.type,
-        subject: actionOptions.subject ?? id,
-        message: actionOptions.message,
-        data: parseJsonObject(actionOptions.data, { test: true }),
-        metadata: parseJsonObject(actionOptions.metadata, {}),
-      }, { honorFilters: actionOptions.honorFilters });
-      print(result, wantsJson(actionOptions, command), `${result.status}: ${result.channelId}`);
+      const json = wantsJson(actionOptions, command);
+      try {
+        const result = await createClient(options).testChannel(id, {
+          source: actionOptions.source ?? options.source,
+          type: actionOptions.type,
+          subject: actionOptions.subject ?? id,
+          message: actionOptions.message,
+          data: parseJsonObject(actionOptions.data, { test: true }),
+          metadata: parseJsonObject(actionOptions.metadata, {}),
+        }, { honorFilters: actionOptions.honorFilters });
+        print(result, json, `${result.status}: ${result.channelId}`);
+      } catch (error) {
+        fail(error, json);
+      }
     });
 
   channels
@@ -224,15 +244,20 @@ export function registerChannelCommands(program: CommanderLike, options: Registe
     .option("--metadata <json>", "Event metadata JSON object")
     .option("-j, --json", "Print JSON output", false)
     .action(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; json?: boolean }, command?: CommanderCommandLike) => {
-      const result = await createClient(options).matchChannel(id, {
-        source: actionOptions.source ?? options.source,
-        type: actionOptions.type,
-        subject: actionOptions.subject ?? id,
-        message: actionOptions.message,
-        data: parseJsonObject(actionOptions.data, { test: true }),
-        metadata: parseJsonObject(actionOptions.metadata, {}),
-      });
-      print(result, wantsJson(actionOptions, command), `${result.matched ? "matched" : "skipped"}: ${result.channelId}`);
+      const json = wantsJson(actionOptions, command);
+      try {
+        const result = await createClient(options).matchChannel(id, {
+          source: actionOptions.source ?? options.source,
+          type: actionOptions.type,
+          subject: actionOptions.subject ?? id,
+          message: actionOptions.message,
+          data: parseJsonObject(actionOptions.data, { test: true }),
+          metadata: parseJsonObject(actionOptions.metadata, {}),
+        });
+        print(result, json, `${result.matched ? "matched" : "skipped"}: ${result.channelId}`);
+      } catch (error) {
+        fail(error, json);
+      }
     });
 
   return channels;
