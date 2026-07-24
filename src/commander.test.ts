@@ -159,7 +159,9 @@ describe("commander adapter", () => {
     expect(errors).toEqual([]);
     expect(JSON.parse(output.at(-1) ?? "{}")).toEqual({ error: "Channel not found: no-such-channel-xyz" });
     expect(process.exitCode).toBe(1);
-    process.exitCode = previousExitCode;
+    // Bun does not reset process.exitCode when assigned `undefined` (unlike Node),
+    // so coerce to a numeric 0 to avoid leaking a nonzero exit into the runner.
+    process.exitCode = previousExitCode ?? 0;
   });
 
   test("channels match on an unknown channel emits a clean error without a stack trace", async () => {
@@ -180,7 +182,9 @@ describe("commander adapter", () => {
 
     expect(errors).toEqual(["Channel not found: no-such-channel-xyz"]);
     expect(process.exitCode).toBe(1);
-    process.exitCode = previousExitCode;
+    // Bun does not reset process.exitCode when assigned `undefined` (unlike Node),
+    // so coerce to a numeric 0 to avoid leaking a nonzero exit into the runner.
+    process.exitCode = previousExitCode ?? 0;
   });
 
   test("embedded replay supports cursor paging", async () => {
