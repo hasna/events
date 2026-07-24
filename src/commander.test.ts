@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerEventsCommands } from "./commander.js";
+import { DEFAULT_EVENT_LIST_LIMIT, registerEventsCommands } from "./commander.js";
 
 let dataDir = "";
 
@@ -210,5 +210,64 @@ describe("commander adapter", () => {
     expect(secondPage.events).toHaveLength(1);
     expect(secondPage.events[0].id).not.toBe(firstPage.events[0].id);
     expect(secondPage.hasMore).toBe(false);
+  });
+
+  test("events list applies a sane built-in default limit when none is configured", () => {
+    const program = new Command();
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    const events = program.commands.find((command) => command.name() === "events");
+    const list = events?.commands.find((command: { name: () => string }) => command.name() === "list");
+    const limitOption = list?.options.find((option: { long?: string }) => option.long === "--limit");
+
+    expect(limitOption).toBeDefined();
+    expect(limitOption?.defaultValue).toBe(DEFAULT_EVENT_LIST_LIMIT);
+  });
+
+  test("events list caps output to the configured default limit and returns the most recent events", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const originalLog = console.log;
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir, defaultEventListLimit: 2 });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.one", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.two", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.three", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "events", "list", "-j"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const rows = JSON.parse(output.at(-1) ?? "[]");
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row: { type: string }) => row.type)).toEqual(["testapp.two", "testapp.three"]);
+  });
+
+  test("events list --limit 0 lists every recorded event, overriding the default cap", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const originalLog = console.log;
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir, defaultEventListLimit: 2 });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.one", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.two", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "events", "emit", "testapp.three", "--no-deliver"]);
+      await program.parseAsync(["node", "testapp", "events", "list", "--limit", "0", "-j"]);
+    } finally {
+      console.log = originalLog;
+    }
+
+    const rows = JSON.parse(output.at(-1) ?? "[]");
+    expect(rows).toHaveLength(3);
   });
 });
