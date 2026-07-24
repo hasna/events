@@ -135,6 +135,54 @@ describe("commander adapter", () => {
     expect(JSON.parse(output.at(-1) ?? "{}").matched).toBe(true);
   });
 
+  test("channels test on an unknown channel emits a clean JSON error, honoring --json", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    const previousExitCode = process.exitCode;
+    program.exitOverride();
+    program.option("-j, --json", "Output JSON");
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      console.error = (value?: unknown) => errors.push(String(value));
+      await program.parseAsync(["node", "testapp", "-j", "channels", "test", "no-such-channel-xyz"]);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+    }
+
+    expect(errors).toEqual([]);
+    expect(JSON.parse(output.at(-1) ?? "{}")).toEqual({ error: "Channel not found: no-such-channel-xyz" });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = previousExitCode;
+  });
+
+  test("channels match on an unknown channel emits a clean error without a stack trace", async () => {
+    const program = new Command();
+    const errors: string[] = [];
+    const originalError = console.error;
+    const previousExitCode = process.exitCode;
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.error = (value?: unknown) => errors.push(String(value));
+      await program.parseAsync(["node", "testapp", "channels", "match", "no-such-channel-xyz"]);
+    } finally {
+      console.error = originalError;
+    }
+
+    expect(errors).toEqual(["Channel not found: no-such-channel-xyz"]);
+    expect(process.exitCode).toBe(1);
+    process.exitCode = previousExitCode;
+  });
+
   test("embedded replay supports cursor paging", async () => {
     const program = new Command();
     const output: string[] = [];
