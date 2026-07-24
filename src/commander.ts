@@ -89,6 +89,27 @@ function wantsJson(actionOptions: {
   return hasJsonOption(actionOptions) || hasJsonOption(command);
 }
 
+// Wraps a command action so a thrown error is rendered cleanly instead of
+// crashing with a raw stack trace. The last two arguments of a commander
+// action are always (actionOptions, command), which is what wantsJson needs.
+function withErrorHandling<Handler extends (...args: any[]) => Promise<void>>(handler: Handler): Handler {
+  return (async (...args: unknown[]) => {
+    const command = args[args.length - 1];
+    const actionOptions = args[args.length - 2] as Parameters<typeof wantsJson>[0];
+    try {
+      await handler(...(args as Parameters<Handler>));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (wantsJson(actionOptions, command as Parameters<typeof wantsJson>[1])) {
+        console.log(JSON.stringify({ error: message }));
+      } else {
+        console.error(message);
+      }
+      process.exitCode = 1;
+    }
+  }) as Handler;
+}
+
 export function registerChannelCommands(program: CommanderLike, options: RegisterEventsCommandsOptions): CommanderCommandLike {
   const channels = program.command(options.channelsCommandName ?? "channels").description("Manage Hasna event channels");
 
@@ -200,7 +221,7 @@ export function registerChannelCommands(program: CommanderLike, options: Registe
     .option("--metadata <json>", "Event metadata JSON object")
     .option("--honor-filters", "Skip delivery when the sample event does not match channel filters", false)
     .option("-j, --json", "Print JSON output", false)
-    .action(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; honorFilters?: boolean; json?: boolean }, command?: CommanderCommandLike) => {
+    .action(withErrorHandling(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; honorFilters?: boolean; json?: boolean }, command?: CommanderCommandLike) => {
       const result = await createClient(options).testChannel(id, {
         source: actionOptions.source ?? options.source,
         type: actionOptions.type,
@@ -210,7 +231,7 @@ export function registerChannelCommands(program: CommanderLike, options: Registe
         metadata: parseJsonObject(actionOptions.metadata, {}),
       }, { honorFilters: actionOptions.honorFilters });
       print(result, wantsJson(actionOptions, command), `${result.status}: ${result.channelId}`);
-    });
+    }));
 
   channels
     .command("match")
@@ -223,7 +244,7 @@ export function registerChannelCommands(program: CommanderLike, options: Registe
     .option("--data <json>", "Event data JSON object")
     .option("--metadata <json>", "Event metadata JSON object")
     .option("-j, --json", "Print JSON output", false)
-    .action(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; json?: boolean }, command?: CommanderCommandLike) => {
+    .action(withErrorHandling(async (id: string, actionOptions: { source?: string; type: string; subject?: string; message: string; data?: string; metadata?: string; json?: boolean }, command?: CommanderCommandLike) => {
       const result = await createClient(options).matchChannel(id, {
         source: actionOptions.source ?? options.source,
         type: actionOptions.type,
@@ -233,7 +254,7 @@ export function registerChannelCommands(program: CommanderLike, options: Registe
         metadata: parseJsonObject(actionOptions.metadata, {}),
       });
       print(result, wantsJson(actionOptions, command), `${result.matched ? "matched" : "skipped"}: ${result.channelId}`);
-    });
+    }));
 
   return channels;
 }

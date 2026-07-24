@@ -163,4 +163,87 @@ describe("commander adapter", () => {
     expect(secondPage.events[0].id).not.toBe(firstPage.events[0].id);
     expect(secondPage.hasMore).toBe(false);
   });
+
+  test("channels match on an unknown channel prints a clean JSON error and exits 1", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    const previousExitCode = process.exitCode;
+    program.exitOverride();
+    program.option("-j, --json", "Output JSON");
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      console.error = (value?: unknown) => errors.push(String(value));
+      process.exitCode = undefined;
+      await program.parseAsync(["node", "testapp", "-j", "channels", "match", "no-such-channel-xyz"]);
+
+      expect(errors).toHaveLength(0);
+      expect(JSON.parse(output.at(-1) ?? "{}")).toEqual({ error: "Channel not found: no-such-channel-xyz" });
+      expect(process.exitCode as number | undefined).toBe(1);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  test("channels match without --json prints a clean error to stderr and exits 1", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    const previousExitCode = process.exitCode;
+    program.exitOverride();
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      console.error = (value?: unknown) => errors.push(String(value));
+      process.exitCode = undefined;
+      await program.parseAsync(["node", "testapp", "channels", "match", "no-such-channel-xyz"]);
+
+      expect(output).toHaveLength(0);
+      expect(errors.at(-1)).toBe("Channel not found: no-such-channel-xyz");
+      expect(process.exitCode as number | undefined).toBe(1);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      process.exitCode = previousExitCode;
+    }
+  });
+
+  test("channels test on an unknown channel prints a clean JSON error and exits 1", async () => {
+    const program = new Command();
+    const output: string[] = [];
+    const errors: string[] = [];
+    const originalLog = console.log;
+    const originalError = console.error;
+    const previousExitCode = process.exitCode;
+    program.exitOverride();
+    program.option("-j, --json", "Output JSON");
+    program.configureOutput({ writeOut: () => undefined, writeErr: () => undefined });
+    registerEventsCommands(program, { source: "testapp", dataDir });
+
+    try {
+      console.log = (value?: unknown) => output.push(String(value));
+      console.error = (value?: unknown) => errors.push(String(value));
+      process.exitCode = undefined;
+      await program.parseAsync(["node", "testapp", "-j", "channels", "test", "no-such-channel-xyz"]);
+
+      expect(errors).toHaveLength(0);
+      expect(JSON.parse(output.at(-1) ?? "{}")).toEqual({ error: "Channel not found: no-such-channel-xyz" });
+      expect(process.exitCode as number | undefined).toBe(1);
+    } finally {
+      console.log = originalLog;
+      console.error = originalError;
+      process.exitCode = previousExitCode;
+    }
+  });
 });
