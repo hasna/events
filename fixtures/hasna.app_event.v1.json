@@ -1,0 +1,108 @@
+{
+  "event_id": "evt_fixture_todo_completed_01",
+  "event_type": "todos.task.completed",
+  "schema_version": "hasna.app_event.v1",
+  "source": {
+    "app": "open-todos",
+    "version": "0.0.0-fixture",
+    "machine": "fixture.local"
+  },
+  "occurred_at": "2026-07-29T12:00:00.000Z",
+  "severity": "notice",
+  "idempotency": {
+    "dedupe_key": "fixture:interop-project:todo-42:completed:v1",
+    "replay_safe": true
+  },
+  "correlation": {
+    "correlation_id": "corr_fixture_interop_project_01",
+    "causation_id": "evt_fixture_todo_created_01"
+  },
+  "subject": {
+    "kind": "task",
+    "id": "todo_fixture_42",
+    "uri": "hasna://todos/tasks/todo_fixture_42"
+  },
+  "actor": {
+    "kind": "service",
+    "id": "open-todos",
+    "name": "Todos fixture producer"
+  },
+  "project_mappings": {
+    "canonical_id": "project_fixture_interop",
+    "slug": "interop-fixture",
+    "repository": "https://example.invalid/hasna/interop-fixture",
+    "workspace": "workspace_fixture_interop",
+    "external_ids": {
+      "todos": "project_fixture_interop",
+      "conversations": "conversation_fixture_17",
+      "mementos": "memento_fixture_09",
+      "projects": "project_fixture_interop",
+      "codewith": "mailbox_fixture_interop"
+    }
+  },
+  "summary": "Interop fixture task completed successfully.",
+  "data": {
+    "task_status": "completed",
+    "task_title": "Verify app-event interoperability",
+    "conversation_id": "conversation_fixture_17",
+    "memento_id": "memento_fixture_09",
+    "mailbox_topic": "project.activity",
+    "render_hint": {
+      "component": "StatusBadge",
+      "tone": "success"
+    }
+  },
+  "resource_refs": [
+    {
+      "kind": "task",
+      "id": "todo_fixture_42",
+      "uri": "hasna://todos/tasks/todo_fixture_42",
+      "source_package": "@hasna/todos",
+      "external_id": "todo_fixture_42"
+    },
+    {
+      "kind": "conversation",
+      "id": "conversation_fixture_17",
+      "uri": "hasna://conversations/conversation_fixture_17"
+    },
+    {
+      "kind": "memento",
+      "id": "memento_fixture_09",
+      "uri": "hasna://mementos/memento_fixture_09"
+    },
+    {
+      "kind": "render",
+      "id": "project_fixture_interop_status",
+      "uri": "hasna://projects/project_fixture_interop/render/status"
+    }
+  ],
+  "evidence_refs": [
+    {
+      "kind": "test_result",
+      "id": "evidence_fixture_interop_01",
+      "uri": "artifact://interop-fixture/test-report.json",
+      "redaction": "none"
+    }
+  ],
+  "sensitivity": {
+    "classification": "internal",
+    "contains_personal_data": false
+  },
+  "redaction": {
+    "state": "none",
+    "fields": [],
+    "safe_for_logs": true
+  },
+  "delivery": {
+    "intent": "notification",
+    "mode": "at_least_once",
+    "targets": [
+      "todos",
+      "conversations",
+      "mementos",
+      "projects-json-render",
+      "codewith-mailbox"
+    ],
+    "agent_conversation_injection": false
+  }
+}

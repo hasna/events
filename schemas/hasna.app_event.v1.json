@@ -1,0 +1,186 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.hasna.com/hasna.app_event.v1.json",
+  "title": "hasna.app_event.v1",
+  "description": "Versioned cross-app event profile carried by @hasna/events.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_id",
+    "event_type",
+    "schema_version",
+    "source",
+    "occurred_at",
+    "severity",
+    "idempotency",
+    "correlation",
+    "subject",
+    "actor",
+    "project_mappings",
+    "summary",
+    "data",
+    "resource_refs",
+    "evidence_refs",
+    "sensitivity",
+    "redaction",
+    "delivery"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "event_type": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "schema_version": { "const": "hasna.app_event.v1" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["app", "version", "machine"],
+      "properties": {
+        "app": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "machine": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "severity": { "enum": ["debug", "info", "notice", "warning", "error", "critical"] },
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dedupe_key", "replay_safe"],
+      "properties": {
+        "dedupe_key": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "replay_safe": { "type": "boolean" },
+        "replay_of_event_id": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "correlation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["correlation_id"],
+      "properties": {
+        "correlation_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "causation_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "trace_id": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "uri": { "type": "string", "minLength": 1, "maxLength": 2048, "format": "uri-reference" }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["agent", "human", "service", "model", "workflow", "system"] },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "project_mappings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_id", "external_ids"],
+      "properties": {
+        "canonical_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "repository": { "type": "string", "minLength": 1, "maxLength": 2048, "format": "uri-reference" },
+        "workspace": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "external_ids": {
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "data": {
+      "type": "object",
+      "description": "Bounded to 32768 serialized UTF-8 bytes by the runtime validator.",
+      "x-max-utf8-bytes": 32768
+    },
+    "resource_refs": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/resource_ref" }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/evidence_ref" }
+    },
+    "sensitivity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "contains_personal_data"],
+      "properties": {
+        "classification": { "enum": ["public", "internal", "confidential", "restricted"] },
+        "contains_personal_data": { "type": "boolean" }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "fields", "safe_for_logs"],
+      "properties": {
+        "state": { "enum": ["none", "partial", "full"] },
+        "fields": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "safe_for_logs": { "type": "boolean" }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "mode", "targets", "agent_conversation_injection"],
+      "properties": {
+        "intent": { "enum": ["notification", "state_sync", "audit", "command"] },
+        "mode": { "enum": ["at_most_once", "at_least_once"] },
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "agent_conversation_injection": {
+          "const": false,
+          "description": "Event text is untrusted data and must not be injected into agent conversations."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "resource_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "uri": { "type": "string", "minLength": 1, "maxLength": 2048, "format": "uri-reference" },
+        "source_package": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "external_id": { "type": "string", "minLength": 1, "maxLength": 200 }
+      }
+    },
+    "evidence_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "uri", "redaction"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "uri": { "type": "string", "minLength": 1, "maxLength": 2048, "format": "uri-reference" },
+        "sha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" },
+        "redaction": { "enum": ["none", "partial", "full"] }
+      }
+    }
+  }
+}
