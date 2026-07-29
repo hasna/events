@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "project": "open-events",
+  "package": "@hasna/events",
+  "storage": {
+    "waiver": {
+      "scope": "local-filesystem",
+      "reason": "The package intentionally stores user-owned JSON data under ~/.hasna/events and does not provision or mutate remote infrastructure."
+    }
+  }
+}

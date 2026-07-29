@@ -46,12 +46,16 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "hasna.contract.json"
   ],
   "scripts": {
     "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/index.ts src/storage.ts src/signing.ts src/filter.ts src/transports.ts src/types.ts src/commander.ts src/catalog.ts --outdir dist --target bun && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
+    "contract:check": "bunx @hasna/contracts conformance-check",
+    "artifact-scan": "bunx @hasna/contracts artifact-scan",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "prepack": "bun run build && bun run artifact-scan",
     "prepublishOnly": "bun run test && bun run build"
   },
   "keywords": [
