@@ -67,17 +67,30 @@ afterEach(() => {
 
 describe("CLI smoke behavior", () => {
   test("prints nested group help", async () => {
+    const rootHelp = await runCliText(["--help"]);
+    expect(rootHelp.exitCode).toBe(0);
+    expect(rootHelp.stderr).toBe("");
+    expect(rootHelp.stdout).toContain("Global options (must precede the command group)");
+    expect(rootHelp.stdout).toContain("-v, --version");
+
     const webhooksHelp = await runCli(["channels", "--help"]);
     expect(webhooksHelp.exitCode).toBe(0);
     expect(webhooksHelp.stderr).toBe("");
     expect(webhooksHelp.stdout).toContain("events channels");
     expect(webhooksHelp.stdout).toContain("channels add");
+    expect(webhooksHelp.stdout).toContain("Test and match options:");
+    expect(webhooksHelp.stdout).toContain("--honor-filters");
 
     const eventsHelp = await runCli(["events", "--help"]);
     expect(eventsHelp.exitCode).toBe(0);
     expect(eventsHelp.stderr).toBe("");
     expect(eventsHelp.stdout).toContain("events events");
     expect(eventsHelp.stdout).toContain("events emit");
+    expect(eventsHelp.stdout).toContain("List options:");
+    expect(eventsHelp.stdout).toContain("Replay options:");
+    for (const option of ["--dedupe-key", "--no-deliver", "--id <event-id>", "--cursor <cursor>", "--dry-run"]) {
+      expect(eventsHelp.stdout).toContain(option);
+    }
   });
 
   test("does not expose legacy webhooks command group", async () => {
@@ -96,6 +109,11 @@ describe("CLI smoke behavior", () => {
     expect(addHelp.stdout).toContain("--arg <arg>");
     expect(addHelp.stdout).toContain("--timeout-ms <ms>");
     expect(addHelp.stdout).toContain("--retry-attempts <n>");
+    expect(addHelp.stdout).toContain("--event-type <pattern>");
+    expect(addHelp.stdout).toContain("default: generated UUID");
+    expect(addHelp.stdout).toContain("default: webhook");
+    expect(addHelp.stdout).toContain("default: 15000");
+    expect(addHelp.stdout).toContain("--disabled");
     expect(addHelp.stdout).toContain("--arg=--json");
 
     const emitHelp = await runCli(["events", "emit", "--help"]);
