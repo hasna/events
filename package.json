@@ -51,8 +51,8 @@
   ],
   "scripts": {
     "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/index.ts src/storage.ts src/signing.ts src/filter.ts src/transports.ts src/types.ts src/commander.ts src/catalog.ts --outdir dist --target bun && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
-    "contract:check": "bunx @hasna/contracts conformance-check",
-    "artifact-scan": "bunx @hasna/contracts artifact-scan",
+    "contract:check": "contracts repo-conformance .",
+    "artifact-scan": "bun scripts/artifact-scan.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "prepack": "bun run build && bun run artifact-scan",
@@ -87,6 +87,7 @@
     "commander": "^13.1.0"
   },
   "devDependencies": {
+    "@hasna/contracts": "0.8.5",
     "@types/bun": "latest",
     "typescript": "^5.7.3"
   }
