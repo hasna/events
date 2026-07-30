@@ -8,7 +8,8 @@ This package is local-first. By default it stores JSON files under `~/.hasna/eve
 - `events.json`
 - `deliveries.json`
 
-Override the data directory with `HASNA_EVENTS_DIR`, `HASNA_EVENTS_HOME`, or the CLI `--dir` flag.
+The CLI `--dir` flag has highest precedence, followed by `HASNA_EVENTS_DIR`,
+then the legacy `HASNA_EVENTS_HOME` fallback.
 
 ## Storage Runtime Contract
 
@@ -55,7 +56,7 @@ changes is an explicit deployment/approval step, not part of this local runtime.
 bun add @hasna/events
 ```
 
-This package is not published by this repository setup step. Apps can also depend on the local workspace path while the rollout is in progress.
+The runtime requires Bun 1.0 or newer.
 
 ## Event Envelope
 
@@ -81,21 +82,29 @@ await events.emit({
 });
 ```
 
-Envelope fields are:
+Only `source` and `type` are required inputs. `id` defaults to a UUID, `time`
+to the current ISO timestamp, `severity` to `info`, `data` and `metadata` to
+empty objects, and `schemaVersion` to `1.0`. `subject`, `message`, and
+`dedupeKey` are optional.
 
-- `id`
-- `source`
-- `type`
-- `time`
-- `subject`
-- `severity`
-- `data`
-- `message`
-- `dedupeKey`
-- `schemaVersion`
-- `metadata`
+`source` should be the emitting app or bounded context. `type` should use dot
+notation such as `ticket.created`, `repo.synced`, or `check.failed`. Emission
+deduplicates by either an explicit `id` or `dedupeKey` by default; a duplicate
+is neither stored nor delivered again. Library callers can pass
+`{ dedupe: false }` to store a duplicate intentionally.
 
-`source` should be the emitting app or bounded context. `type` should use dot notation such as `ticket.created`, `repo.synced`, or `check.failed`.
+## Package Entry Points
+
+The root export includes the client, types, storage, filtering, signing,
+transports, and catalog APIs. Focused entry points are also available:
+
+- `@hasna/events/storage`
+- `@hasna/events/signing`
+- `@hasna/events/filter`
+- `@hasna/events/transports`
+- `@hasna/events/catalog`
+- `@hasna/events/commander`
+- `@hasna/events/cli`
 
 ## Typed Event Catalog (Distribution Events)
 
@@ -207,7 +216,11 @@ await events.addChannel({
 });
 ```
 
-Filters support `*` wildcards and nested `data` or `metadata` paths.
+All matchers inside one filter are ANDed. Multiple filters on a channel are
+ORed. A channel with no filters accepts every event, while a disabled channel
+accepts none. String matchers support `*` and `**`; `data` and `metadata`
+matchers also support nested or literal dotted keys, primitive array-member
+matching, typed values, and negative matchers.
 
 ## Webhook Transport
 
@@ -215,6 +228,8 @@ Webhook delivery sends a `POST` with the event envelope as JSON.
 
 Headers:
 
+- `Content-Type: application/json`
+- `User-Agent: @hasna/events`
 - `X-Hasna-Event-Id`
 - `X-Hasna-Event-Type`
 - `X-Hasna-Timestamp`
@@ -243,6 +258,10 @@ const ok = verifyWebhookSignature(secret, timestamp, body, signature);
 `verifyWebhookSignature` rejects timestamps outside a five-minute window by default.
 Pass an explicit `toleranceMs` when a consumer needs a tighter or wider replay
 window.
+
+Webhook requests time out after 15 seconds unless `webhook.timeoutMs` is set.
+Non-2xx responses and network failures are recorded as failed attempts. Stored
+response bodies are truncated after 4,096 characters.
 
 ## Command Transport
 
@@ -278,19 +297,28 @@ Environment variables:
 - `HASNA_EVENT_SCHEMA_VERSION`
 - `HASNA_EVENT_JSON`
 
-The transport type union already reserves `email`, `sse`, and `mcp-relay` for later implementations.
+Command processes time out after 15 seconds unless `command.timeoutMs` is set.
+Their stdout and stderr are stored on the delivery attempt and truncated after
+4,096 characters. A zero exit code succeeds; other exits or signals fail.
+
+Both implemented transports use one attempt by default. Channel retry policy
+can increase `maxAttempts`; failed attempts back off from 250 ms by a default
+multiplier of 2 unless overridden. The transport type union reserves `email`,
+`sse`, and `mcp-relay`, but the CLI refuses to configure them and direct
+dispatch currently records them as skipped.
 
 ## Redaction
 
 Events scrub obvious sensitive keys such as `secret`, `token`, `password`,
-`apiKey`, and `authorization` before local storage and delivery by default.
+`apiKey`, `api_key`, `api-key`, and `authorization` recursively before local
+storage and delivery by default.
 Callers that intentionally need raw local payloads can pass:
 
 ```ts
 await events.emit(input, { redactSensitiveData: false });
 ```
 
-Use channel-level paths for config-only redaction:
+Use channel-level paths for per-channel delivery redaction:
 
 ```ts
 await events.addChannel({
@@ -319,6 +347,12 @@ const events = new EventsClient({
 
 The package exposes `events` and `hasna-events`.
 
+Global options must come before the command group:
+
+```bash
+events --dir /tmp/events --json status
+```
+
 ```bash
 events channels add https://example.com/channels/hasna \
   --id ops \
@@ -329,13 +363,16 @@ events channels add https://example.com/channels/hasna \
 
 events channels list
 events channels test ops
+events channels match ops
 events channels remove ops
 ```
 
 Field filters can match nested `data` or `metadata` values. Plain
 `--data`/`--metadata` values are strings, which keeps ids and slugs such as
 `001` intact. Use `--data-json` or `--metadata-json` for typed JSON predicates.
-Dot paths access nested object keys; dots inside key names are not escaped yet.
+Dot paths check both nested object keys and literal dotted keys; there is no
+syntax to distinguish between those two forms yet. A negative predicate also
+matches when its field is absent.
 When the actual event value is an array, string filters match any primitive
 array member, which is useful for tag routing such as `data.tags=auto:route`.
 Use `path!=value` or `path!=json` for negative predicates such as
@@ -389,6 +426,7 @@ events events emit ticket.created \
   --data '{"ticketId":123}'
 
 events events list --limit 20
+events events list --source tickets --type ticket.created
 events events replay --type ticket.created
 events events replay --type ticket.created --dry-run --limit 100
 events events replay --type ticket.created --cursor "$NEXT_CURSOR" --limit 100
@@ -401,10 +439,10 @@ previous JSON replay response rather than constructing cursor strings in
 callers. A replay without `--limit` or `--cursor` processes all matching events;
 use those flags when callers need bounded page-by-page replay.
 
-Machine-readable status:
+Machine-readable status (global flags precede `status`):
 
 ```bash
-events status --json
+events --json status
 ```
 
 The status contract reports storage runtime, event, channel, delivery, file, and
@@ -412,6 +450,11 @@ transport metadata only. It does not include event payloads, webhook signing
 secrets, command environment values, or channel targets.
 
 Use `--json` for script-friendly output and `--dir <path>` for isolated data.
+The standalone `events events list` command has no implicit row cap. Commands
+registered into another Commander program with `registerEventsCommands` default
+to the 100 most recent rows, accept a host override, and use `--limit 0` to list
+all rows. The embedded emitter also supports `--no-dedupe`; the standalone CLI
+does not currently expose that library option.
 
 ## App Integration Pattern
 
