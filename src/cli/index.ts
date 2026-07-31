@@ -147,8 +147,16 @@ Usage:
   ${name} [--dir <path>] [--json] events list [--limit <n>]
   ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--cursor <cursor>] [--limit <n>] [--dry-run]
 
+Global options (must precede the command group):
+  --dir <path>              Data directory
+  -j, --json               Print JSON output
+  -h, --help               Show help
+  -v, --version            Show version
+
 Environment:
-  HASNA_EVENTS_DIR or HASNA_EVENTS_HOME overrides the default ${getEventsDataDir()}`);
+  HASNA_EVENTS_DIR          Primary data-directory override
+  HASNA_EVENTS_HOME         Legacy data-directory fallback
+  Default directory         ${getEventsDataDir()}`);
 }
 
 function printChannelsHelp(options: RunEventsCliOptions = {}): void {
@@ -163,22 +171,24 @@ Usage:
   ${name} [--dir <path>] [--json] channels match <id>
   ${name} [--dir <path>] [--json] channels status
 
-Options:
-  --id <id>                 Channel id for add
-  --type <pattern>          Event type filter, supports wildcards
-  --source <source>         Event source filter
-  --subject <subject>       Event subject filter
-  --severity <severity>     Event severity filter
-  --data <path=value|path!=value> Event data field filter, repeatable; strings, dot paths, array-member matching, * segment wildcard, ** recursive wildcard
-  --metadata <path=value|path!=value> Event metadata field filter, repeatable; strings, dot paths, array-member matching, * segment wildcard, ** recursive wildcard
-  --data-json <path=json|path!=json> Event data field filter with typed JSON value
-  --metadata-json <path=json|path!=json> Event metadata field filter with typed JSON value
-  --honor-filters           On channels test, skip delivery when the sample event does not match filters
-  --transport <kind>        webhook or command
-  --secret <secret>         Webhook signing secret
-  --header <name=value>     Webhook header, repeatable
-  --redact <path>           Redaction path, repeatable
-  --no-deliver              Available on events emit`);
+Commands:
+  add                       Add or replace a channel
+  list                      List configured channels
+  remove                    Remove a channel
+  test                      Send a sample event to one channel
+  match                     Preview a sample event without delivery
+  status                    Show channel storage status
+
+Run '${name} channels add --help' for add options.
+
+Test and match options:
+  --source <source>         Event source (default: ${options.source ?? "hasna.events"})
+  --type <type>             Event type (default: events.test)
+  --subject <subject>       Event subject (default: channel id)
+  --message <message>       Event message
+  --data <json>             Event data object
+  --metadata <json>         Event metadata object
+  --honor-filters           Test only: skip delivery on a filter mismatch`);
 }
 
 function printChannelAddHelp(options: RunEventsCliOptions = {}): void {
@@ -190,23 +200,24 @@ Usage:
   ${name} [--dir <path>] [--json] channels add <command> --transport command [options] -- [command-args...]
 
 Options:
-  --id <id>                 Channel id
+  --id <id>                 Channel id (default: generated UUID)
   --name <name>             Display name
-  --transport <kind>        webhook or command
+  --transport <kind>        webhook or command (default: webhook)
   --type <pattern>          Event type filter, supports wildcards
+  --event-type <pattern>    Alias for --type
   --source <source>         Event source filter
   --subject <subject>       Event subject filter
   --severity <severity>     Event severity filter
-  --data <path=value|path!=value> Event data field filter, repeatable
-  --metadata <path=value|path!=value> Event metadata field filter, repeatable
-  --data-json <path=json|path!=json> Event data field filter with typed JSON value
-  --metadata-json <path=json|path!=json> Event metadata field filter with typed JSON value
+  --data <path=value>       String data filter; repeatable; != negates
+  --metadata <path=value>   String metadata filter; repeatable; != negates
+  --data-json <path=json>   Typed JSON data filter; repeatable; != negates
+  --metadata-json <path=json> Typed JSON metadata filter; repeatable; != negates
   --secret <secret>         Webhook signing secret
   --header <name=value>     Webhook header, repeatable
   --arg <arg>               Command argument, repeatable; values may begin with dashes
-  --timeout-ms <ms>         Transport timeout in milliseconds
-  --retry-attempts <n>      Maximum delivery attempts
-  --retry-backoff-ms <ms>   Initial retry backoff in milliseconds
+  --timeout-ms <ms>         Transport timeout (default: 15000)
+  --retry-attempts <n>      Maximum delivery attempts (default: 1)
+  --retry-backoff-ms <ms>   Initial retry backoff (default: 250)
   --redact <path>           Redaction path, repeatable
   --disabled                Create channel disabled
 
@@ -226,15 +237,25 @@ Usage:
   ${name} [--dir <path>] [--json] events list [--limit <n>]
   ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--cursor <cursor>] [--limit <n>] [--dry-run]
 
-Options:
+Emit options:
   --source <source>         Event source${options.source ? ` (default: ${options.source})` : ""}
   --subject <subject>       Event subject
-  --severity <severity>     Event severity
+  --severity <severity>     debug|info|notice|warning|error|critical (default: info)
   --message <message>       Human-readable event message
   --dedupe-key <key>        Deduplicate repeated events
   --data <json>             JSON object payload
   --metadata <json>         JSON object metadata
   --no-deliver              Record without delivering channels
+
+List options:
+  --source <source>         Filter by exact source
+  --type <type>             Filter by exact type
+  --limit <n>               Most recent events; 0 or omitted lists all
+
+Replay options:
+  --id <event-id>           Filter by exact event id
+  --source <source>         Filter by exact source
+  --type <type>             Filter by exact type
   --cursor <cursor>         Opaque cursor returned by a previous replay page
   --limit <n>               Maximum events to replay
   --dry-run                 Preview replay matches without delivery`);

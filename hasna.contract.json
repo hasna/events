@@ -1,0 +1,49 @@
+{
+  "schema": "hasna.service_contract.v1",
+  "name": "events",
+  "class": "library",
+  "contractVersion": "v1",
+  "kitVersion": "0.8.5",
+  "description": "Shared event envelopes, local channels, replay, and delivery transports for Hasna open-source apps. Library class: the SDK exports are the primary surface and the local `events` CLI is the operator seam. Channel state is user-owned JSON under ~/.hasna/events (HASNA_EVENTS_DIR / HASNA_EVENTS_HOME); the package owns no SQL store and provisions no remote infrastructure, so the dual-storage engine gate does not apply to it.",
+  "bins": [
+    "events"
+  ],
+  "hosting": [
+    "user-hosted"
+  ],
+  "serviceSurfaces": [
+    {
+      "name": "package-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "none",
+      "exportSubpath": "."
+    },
+    {
+      "name": "events-cli",
+      "kind": "cli",
+      "status": "supported",
+      "bin": "events",
+      "authMode": "local-only"
+    }
+  ],
+  "metadata": {
+    "release": {
+      "artifactScan": {
+        "script": "artifact-scan"
+      }
+    },
+    "conformance": {
+      "waivedSurfaces": [
+        {
+          "kind": "api",
+          "reason": "Embedded library plus a local CLI; it owns no HTTP service boundary and ships no serve bin."
+        },
+        {
+          "kind": "mcp",
+          "reason": "Embedded library; MCP execution belongs to the applications that consume these envelopes."
+        }
+      ]
+    }
+  }
+}
