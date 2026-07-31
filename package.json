@@ -34,6 +34,12 @@
       "types": "./dist/catalog.d.ts",
       "import": "./dist/catalog.js"
     },
+    "./app-event": {
+      "types": "./dist/app-event.d.ts",
+      "import": "./dist/app-event.js"
+    },
+    "./schemas/hasna.app_event.v1.json": "./schemas/hasna.app_event.v1.json",
+    "./fixtures/hasna.app_event.v1.json": "./fixtures/hasna.app_event.v1.json",
     "./commander": {
       "types": "./dist/commander.d.ts",
       "import": "./dist/commander.js"
@@ -45,12 +51,14 @@
   },
   "files": [
     "dist",
+    "schemas",
+    "fixtures",
     "README.md",
     "LICENSE",
     "hasna.contract.json"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/index.ts src/storage.ts src/signing.ts src/filter.ts src/transports.ts src/types.ts src/commander.ts src/catalog.ts --outdir dist --target bun && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/index.ts src/storage.ts src/signing.ts src/filter.ts src/transports.ts src/types.ts src/commander.ts src/catalog.ts src/app-event.ts --outdir dist --target bun && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
     "contract:check": "contracts repo-conformance .",
     "artifact-scan": "bun scripts/artifact-scan.ts",
     "typecheck": "tsc --noEmit",

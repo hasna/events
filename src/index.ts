@@ -27,6 +27,7 @@ export * from "./filter.js";
 export * from "./signing.js";
 export * from "./transports.js";
 export * from "./catalog.js";
+export * from "./app-event.js";
 
 export interface EventsClientOptions extends TransportDispatchOptions {
   store?: EventsStore;
