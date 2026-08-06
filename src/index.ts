@@ -85,7 +85,11 @@ export class EventsClient {
   constructor(options: EventsClientOptions = {}) {
     this.store = options.store ?? new JsonEventsStore(options.dataDir);
     this.redactors = options.redactors ?? [];
-    this.transportOptions = { fetchImpl: options.fetchImpl };
+    this.transportOptions = {
+      fetchImpl: options.fetchImpl,
+      secretResolver: options.secretResolver,
+      now: options.now,
+    };
     this.catalog = options.catalog ?? defaultEventTypeCatalog;
     this.validateCatalogTypes = options.validateCatalogTypes ?? false;
   }

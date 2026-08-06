@@ -4,7 +4,7 @@
   "class": "library",
   "contractVersion": "v1",
   "kitVersion": "0.8.5",
-  "description": "Shared event envelopes, local channels, replay, and delivery transports for Hasna open-source apps. Library class: the SDK exports are the primary surface and the local `events` CLI is the operator seam. Channel state is user-owned JSON under ~/.hasna/events (HASNA_EVENTS_DIR / HASNA_EVENTS_HOME); the package owns no SQL store and provisions no remote infrastructure, so the dual-storage engine gate does not apply to it.",
+  "description": "Shared event envelopes, local channels, replay, and delivery transports for Hasna open-source apps. Library class: SDK exports are the primary surface and the local `events` CLI is the operator seam. The default compatibility store remains user-owned JSON; opt-in durable delivery uses a Node-safe filesystem spool plus a Bun SQLite outbox under the same caller-selected data directory. The package provisions no remote infrastructure.",
   "bins": [
     "events"
   ],
@@ -18,6 +18,27 @@
       "status": "supported",
       "authMode": "none",
       "exportSubpath": "."
+    },
+    {
+      "name": "durable-spool-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "none",
+      "exportSubpath": "./durable-spool"
+    },
+    {
+      "name": "durable-delivery-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "none",
+      "exportSubpath": "./durable"
+    },
+    {
+      "name": "durable-worker-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "none",
+      "exportSubpath": "./durable-worker"
     },
     {
       "name": "events-cli",

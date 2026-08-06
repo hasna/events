@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEvent } from "./index.js";
 import { dispatchCommand, dispatchWebhook } from "./transports.js";
-import { verifyPayloadSignature } from "./signing.js";
+import { verifyPayloadSignature, verifyWebhookSignature } from "./signing.js";
 
 let tempDir = "";
 
@@ -35,6 +35,7 @@ describe("transports", () => {
         time: "2026-06-16T10:00:00.000Z",
         data: { ticketId: 123 },
       });
+      const dispatchTime = "2026-08-06T10:05:00.000Z";
       const attempt = await dispatchWebhook(event, {
         id: "hook",
         enabled: true,
@@ -42,19 +43,33 @@ describe("transports", () => {
         webhook: { url: `http://127.0.0.1:${server.port}`, secret: "shared-secret" },
         createdAt: event.time,
         updatedAt: event.time,
-      });
+      }, { now: () => new Date(dispatchTime) });
 
       expect(attempt.status).toBe("success");
       expect(received?.headers.get("x-hasna-event-id")).toBe("evt_webhook");
       expect(received?.headers.get("x-hasna-event-type")).toBe("ticket.created");
-      expect(received?.headers.get("x-hasna-timestamp")).toBe("2026-06-16T10:00:00.000Z");
-      expect(JSON.parse(received?.body ?? "{}")).toMatchObject({ id: "evt_webhook", data: { ticketId: 123 } });
+      expect(received?.headers.get("x-hasna-timestamp")).toBe(dispatchTime);
+      expect(JSON.parse(received?.body ?? "{}")).toMatchObject({ id: "evt_webhook", time: "2026-06-16T10:00:00.000Z", data: { ticketId: 123 } });
       expect(verifyPayloadSignature(
         "shared-secret",
-        "2026-06-16T10:00:00.000Z",
+        dispatchTime,
         received?.body ?? "",
         received?.headers.get("x-hasna-signature") ?? "",
       )).toBe(true);
+      expect(verifyWebhookSignature(
+        "shared-secret",
+        dispatchTime,
+        received?.body ?? "",
+        received?.headers.get("x-hasna-signature") ?? "",
+        { now: new Date(dispatchTime) },
+      )).toBe(true);
+      expect(verifyWebhookSignature(
+        "shared-secret",
+        dispatchTime,
+        received?.body ?? "",
+        received?.headers.get("x-hasna-signature") ?? "",
+        { now: new Date(Date.parse(dispatchTime) + 6 * 60 * 1_000) },
+      )).toBe(false);
     } finally {
       server.stop(true);
     }
@@ -118,6 +133,47 @@ process.stdin.on("end", () => {
       expect(attempt.status).toBe("failed");
       expect(attempt.responseStatus).toBe(503);
       expect(attempt.error).toContain("HTTP 503");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("resolves webhook signing secrets only at dispatch time", async () => {
+    let signature = "";
+    let body = "";
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        signature = request.headers.get("x-hasna-signature") ?? "";
+        body = await request.text();
+        return new Response("queued", { status: 202 });
+      },
+    });
+    try {
+      const event = createEvent({
+        id: "evt_ref",
+        source: "notes",
+        type: "note.created",
+        time: "2026-08-06T12:00:00.000Z",
+      });
+      const channel = {
+        id: "notes",
+        enabled: true,
+        transport: "webhook" as const,
+        webhook: { url: `http://127.0.0.1:${server.port}`, secretRef: "env:HASNA_NOTES_WEBHOOK_SECRET" },
+        createdAt: event.time,
+        updatedAt: event.time,
+      };
+      const attempt = await dispatchWebhook(event, channel, {
+        secretResolver: async (reference) => reference === "env:HASNA_NOTES_WEBHOOK_SECRET" ? "runtime-secret" : undefined,
+        now: () => new Date(event.time),
+      });
+      expect(attempt.status).toBe("success");
+      expect(verifyPayloadSignature("runtime-secret", event.time, body, signature)).toBe(true);
+
+      const unresolved = await dispatchWebhook(event, channel);
+      expect(unresolved.status).toBe("failed");
+      expect(unresolved.error).toBe("Webhook secret reference has no runtime resolver");
     } finally {
       server.stop(true);
     }

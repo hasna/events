@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventsClient, JsonEventsStore, getEventsDataDir, getEventsStatus, sanitizeChannelForOutput, sanitizeChannelsForOutput, type ChannelConfig, type EventFilter, type TransportKind } from "../index.js";
+import { DurableEventsBroker } from "../durable.js";
+import { runDurableWorker } from "../durable-worker.js";
 import { parseFilterOptions } from "../filter-options.js";
 
 interface ParsedArgs {
@@ -146,6 +148,13 @@ Usage:
   ${name} [--dir <path>] [--json] events emit <type>${options.source ? "" : " --source <source>"} [options]
   ${name} [--dir <path>] [--json] events list [--limit <n>]
   ${name} [--dir <path>] [--json] events replay [--id <event-id>] [--cursor <cursor>] [--limit <n>] [--dry-run]
+  ${name} [--dir <path>] [--json] durable channel <url> [options]
+  ${name} [--dir <path>] [--json] durable enqueue <type> --source <source> [options]
+  ${name} [--dir <path>] [--json] durable import [--limit <n>]
+  ${name} [--dir <path>] [--json] durable drain [--limit <n>] [--lease-ms <ms>]
+  ${name} [--dir <path>] [--json] durable work [--limit <n>] [--lease-ms <ms>] [--reconcile-ms <ms>]
+  ${name} [--dir <path>] [--json] durable retry-dead [--event-id <id>] [--channel-id <id>] [--limit <n>]
+  ${name} [--dir <path>] [--json] durable status
 
 Global options (must precede the command group):
   --dir <path>              Data directory
@@ -282,6 +291,20 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
     return;
   }
 
+  if (group === "durable") {
+    if (!command || command === "--help" || command === "-h" || tail.includes("--help") || tail.includes("-h")) {
+      printDurableHelp(options);
+      return;
+    }
+    const broker = new DurableEventsBroker({ dataDir: parsed.dir ?? getEventsDataDir() });
+    try {
+      await handleDurable(broker, command, tail, parsed);
+    } finally {
+      broker.close();
+    }
+    return;
+  }
+
   const store = new JsonEventsStore(parsed.dir);
   const client = new EventsClient({ store });
 
@@ -314,6 +337,160 @@ export async function runEventsCli(argv = process.argv.slice(2), options: RunEve
     return;
   }
   throw new Error(`Unknown command group: ${group}`);
+}
+
+function printDurableHelp(options: RunEventsCliOptions = {}): void {
+  const name = commandName(options);
+  console.log(`${name} durable
+
+Usage:
+  ${name} [--dir <path>] [--json] durable channel <url> --id <id> --source <source> --type <type> --secret-ref <ref> [options]
+  ${name} [--dir <path>] [--json] durable enqueue <type> --source <source> [options]
+  ${name} [--dir <path>] [--json] durable import [--limit <n>]
+  ${name} [--dir <path>] [--json] durable drain [--limit <n>] [--lease-ms <ms>]
+  ${name} [--dir <path>] [--json] durable work [--limit <n>] [--lease-ms <ms>] [--reconcile-ms <ms>]
+  ${name} [--dir <path>] [--json] durable retry-dead [--event-id <id>] [--channel-id <id>] [--limit <n>]
+  ${name} [--dir <path>] [--json] durable status
+
+Channel options:
+  --id <id>                 Required stable channel id
+  --source <source>         Required exact source filter
+  --type <type>             Required exact event type filter
+  --secret-ref <ref>        Runtime secret reference, e.g. env:HASNA_WEBHOOK_SECRET
+  --timeout-ms <ms>         Webhook timeout (default: 15000)
+  --retry-attempts <n>      Maximum durable attempts (default: 1)
+  --retry-backoff-ms <ms>   Initial persisted backoff (default: 250)
+  --disabled                Persist the route disabled
+
+Enqueue options:
+  --id <id>                 Stable event id
+  --subject <subject>       Stable event subject
+  --time <iso-time>         Event occurrence time
+  --schema-version <value>  Envelope schema version
+  --dedupe-key <key>        Stable business idempotency key
+  --data <json>             Event data object
+  --metadata <json>         Event metadata object`);
+}
+
+async function handleDurable(
+  broker: DurableEventsBroker,
+  command: string,
+  tail: string[],
+  parsed: ParsedArgs,
+): Promise<void> {
+  if (command === "channel") {
+    const args = [...tail];
+    const target = args.shift();
+    if (!target) throw new Error("durable channel requires a webhook URL");
+    const id = takeOption(args, "--id");
+    const source = takeOption(args, "--source");
+    const type = takeOption(args, "--type");
+    if (!id || !source || !type) throw new Error("durable channel requires --id, --source, and --type");
+    if (source.includes("*") || type.includes("*")) throw new Error("durable channel source/type filters must be exact");
+    const secretRef = takeOption(args, "--secret-ref");
+    if (!secretRef) throw new Error("durable channel requires --secret-ref");
+    const timeoutMs = numberOption(takeOption(args, "--timeout-ms"));
+    const retryAttempts = numberOption(takeOption(args, "--retry-attempts"));
+    const retryBackoffMs = numberOption(takeOption(args, "--retry-backoff-ms"));
+    const channel = broker.addChannel({
+      id,
+      enabled: !takeFlag(args, "--disabled"),
+      transport: "webhook",
+      filters: [{ source, type }],
+      webhook: { url: target, secretRef, timeoutMs },
+      retry: retryAttempts || retryBackoffMs
+        ? { maxAttempts: retryAttempts, backoffMs: retryBackoffMs }
+        : undefined,
+    });
+    output(parsed, sanitizeChannelForOutput(channel), () => console.log(`Added durable webhook channel ${channel.id}`));
+    return;
+  }
+
+  if (command === "enqueue") {
+    const args = [...tail];
+    const type = args.shift();
+    if (!type) throw new Error("durable enqueue requires an event type");
+    const source = takeOption(args, "--source");
+    if (!source) throw new Error("durable enqueue requires --source");
+    const result = broker.enqueue({
+      id: takeOption(args, "--id"),
+      source,
+      type,
+      time: takeOption(args, "--time"),
+      subject: takeOption(args, "--subject"),
+      dedupeKey: takeOption(args, "--dedupe-key"),
+      schemaVersion: takeOption(args, "--schema-version"),
+      data: parseJsonOption(takeOption(args, "--data"), {}),
+      metadata: parseJsonOption(takeOption(args, "--metadata"), {}),
+    });
+    output(parsed, result, () => console.log(`${result.deduped ? "Deduped" : "Enqueued"} ${result.event.id} to ${result.queued} channel(s)`));
+    return;
+  }
+
+  if (command === "import") {
+    const args = [...tail];
+    const result = broker.importSpool({ limit: numberOption(takeOption(args, "--limit")) });
+    output(parsed, result, () => console.log(`Imported ${result.imported}, deduped ${result.deduped}, queued ${result.queued}`));
+    return;
+  }
+
+  if (command === "drain") {
+    const args = [...tail];
+    const limit = numberOption(takeOption(args, "--limit"));
+    const imported = broker.importSpool({ limit });
+    const drained = await broker.drain({
+      limit,
+      leaseMs: numberOption(takeOption(args, "--lease-ms")),
+      workerId: takeOption(args, "--worker-id"),
+    });
+    const result = { imported, drained };
+    output(parsed, result, () => console.log(`Claimed ${drained.claimed}, delivered ${drained.delivered}, retried ${drained.retried}, dead ${drained.dead}`));
+    return;
+  }
+
+  if (command === "work") {
+    const args = [...tail];
+    const controller = new AbortController();
+    const stop = () => controller.abort();
+    process.once("SIGTERM", stop);
+    process.once("SIGINT", stop);
+    try {
+      const result = await runDurableWorker({
+        broker,
+        signal: controller.signal,
+        limit: numberOption(takeOption(args, "--limit")),
+        leaseMs: numberOption(takeOption(args, "--lease-ms")),
+        workerId: takeOption(args, "--worker-id"),
+        debounceMs: numberOption(takeOption(args, "--debounce-ms")),
+        reconcileMs: numberOption(takeOption(args, "--reconcile-ms")),
+        watchRestartMs: numberOption(takeOption(args, "--watch-restart-ms")),
+      });
+      output(parsed, result, () => console.log(`Worker stopped after ${result.cycles} cycle(s), delivered ${result.delivered}`));
+    } finally {
+      process.removeListener("SIGTERM", stop);
+      process.removeListener("SIGINT", stop);
+    }
+    return;
+  }
+
+  if (command === "status") {
+    const result = broker.status();
+    output(parsed, result, () => console.log(`events durable: ${result.counts.pending} pending, ${result.counts.leased} leased, ${result.counts.dead} dead`));
+    return;
+  }
+
+  if (command === "retry-dead") {
+    const args = [...tail];
+    const result = broker.retryDead({
+      eventId: takeOption(args, "--event-id"),
+      channelId: takeOption(args, "--channel-id"),
+      limit: numberOption(takeOption(args, "--limit")),
+    });
+    output(parsed, result, () => console.log(`Requeued ${result.requeued} dead delivery job(s)`));
+    return;
+  }
+
+  throw new Error(`Unknown durable command: ${command}`);
 }
 
 async function handleChannels(client: EventsClient, command: string | undefined, tail: string[], parsed: ParsedArgs, options: RunEventsCliOptions): Promise<void> {

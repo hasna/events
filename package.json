@@ -1,6 +1,6 @@
 {
   "name": "@hasna/events",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Shared event envelopes, local channels, replay, and delivery transports for Hasna open-source apps",
   "type": "module",
   "main": "./dist/index.js",
@@ -17,6 +17,18 @@
     "./storage": {
       "types": "./dist/storage.d.ts",
       "import": "./dist/storage.js"
+    },
+    "./durable": {
+      "types": "./dist/durable.d.ts",
+      "import": "./dist/durable.js"
+    },
+    "./durable-spool": {
+      "types": "./dist/durable-spool.d.ts",
+      "import": "./dist/durable-spool.js"
+    },
+    "./durable-worker": {
+      "types": "./dist/durable-worker.d.ts",
+      "import": "./dist/durable-worker.js"
     },
     "./signing": {
       "types": "./dist/signing.d.ts",
@@ -58,11 +70,12 @@
     "hasna.contract.json"
   ],
   "scripts": {
-    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/index.ts src/storage.ts src/signing.ts src/filter.ts src/transports.ts src/types.ts src/commander.ts src/catalog.ts src/app-event.ts --outdir dist --target bun && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
+    "build": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/index.ts src/storage.ts src/signing.ts src/filter.ts src/transports.ts src/types.ts src/commander.ts src/catalog.ts src/app-event.ts src/durable.ts src/durable-worker.ts --root src --outdir dist --target bun && bun build src/durable-spool.ts --root src --outdir dist --target node && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist",
     "contract:check": "contracts repo-conformance .",
     "artifact-scan": "bun scripts/artifact-scan.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "prepare": "bun run build",
     "prepack": "bun run build && bun run artifact-scan",
     "prepublishOnly": "bun run test && bun run build"
   },
@@ -87,7 +100,8 @@
     "url": "https://github.com/hasna/events/issues"
   },
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.0.0",
+    "node": ">=20.0.0"
   },
   "author": "Hasna",
   "license": "Apache-2.0",

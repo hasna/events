@@ -5,6 +5,15 @@ import { signPayload } from "./signing.js";
 
 export interface TransportDispatchOptions {
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  secretResolver?: WebhookSecretResolver;
+  now?: () => Date;
+}
+
+export type WebhookSecretResolver = (reference: string) => string | undefined | Promise<string | undefined>;
+
+export interface BuildWebhookRequestOptions {
+  secret?: string;
+  timestamp?: string;
 }
 
 function now(): string {
@@ -15,10 +24,14 @@ function truncate(value: string, max = 4096): string {
   return value.length > max ? `${value.slice(0, max)}...` : value;
 }
 
-export function buildWebhookRequest(event: EventEnvelope, channel: ChannelConfig): { body: string; headers: Record<string, string> } {
+export function buildWebhookRequest(
+  event: EventEnvelope,
+  channel: ChannelConfig,
+  options: BuildWebhookRequestOptions = {},
+): { body: string; headers: Record<string, string> } {
   if (!channel.webhook) throw new Error(`Channel ${channel.id} has no webhook config`);
   const body = JSON.stringify(event);
-  const timestamp = event.time;
+  const timestamp = options.timestamp ?? new Date().toISOString();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "User-Agent": "@hasna/events",
@@ -27,8 +40,9 @@ export function buildWebhookRequest(event: EventEnvelope, channel: ChannelConfig
     "X-Hasna-Timestamp": timestamp,
     ...channel.webhook.headers,
   };
-  if (channel.webhook.secret) {
-    headers["X-Hasna-Signature"] = signPayload(channel.webhook.secret, timestamp, body);
+  const secret = options.secret ?? channel.webhook.secret;
+  if (secret) {
+    headers["X-Hasna-Signature"] = signPayload(secret, timestamp, body);
   }
   return { body, headers };
 }
@@ -36,7 +50,20 @@ export function buildWebhookRequest(event: EventEnvelope, channel: ChannelConfig
 export async function dispatchWebhook(event: EventEnvelope, channel: ChannelConfig, options: TransportDispatchOptions = {}): Promise<DeliveryAttempt> {
   if (!channel.webhook) throw new Error(`Channel ${channel.id} has no webhook config`);
   const startedAt = now();
-  const { body, headers } = buildWebhookRequest(event, channel);
+  let secret = channel.webhook.secret;
+  if (channel.webhook.secretRef) {
+    if (!options.secretResolver) {
+      return failedAttempt(startedAt, "Webhook secret reference has no runtime resolver");
+    }
+    try {
+      secret = await options.secretResolver(channel.webhook.secretRef);
+    } catch {
+      return failedAttempt(startedAt, "Webhook secret reference could not be resolved");
+    }
+    if (!secret) return failedAttempt(startedAt, "Webhook secret reference could not be resolved");
+  }
+  const timestamp = (options.now?.() ?? new Date()).toISOString();
+  const { body, headers } = buildWebhookRequest(event, channel, { secret, timestamp });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), channel.webhook.timeoutMs ?? 15_000);
   try {
@@ -67,6 +94,16 @@ export async function dispatchWebhook(event: EventEnvelope, channel: ChannelConf
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function failedAttempt(startedAt: string, error: string): DeliveryAttempt {
+  return {
+    attempt: 1,
+    status: "failed",
+    startedAt,
+    completedAt: now(),
+    error,
+  };
 }
 
 export async function dispatchCommand(event: EventEnvelope, channel: ChannelConfig): Promise<DeliveryAttempt> {
