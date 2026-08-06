@@ -74,12 +74,11 @@
     "build": "bun run build:runtime && bun run build:types",
     "build:runtime": "rm -rf dist && bun build src/cli/index.ts --outdir dist/cli --target bun && bun build src/index.ts src/storage.ts src/signing.ts src/filter.ts src/transports.ts src/types.ts src/commander.ts src/catalog.ts src/app-event.ts src/durable.ts src/durable-worker.ts --root src --outdir dist --target bun && bun build src/durable-spool.ts --root src --outdir dist --target node",
     "build:types": "rm -rf types && tsc -p tsconfig.build.json --emitDeclarationOnly --outDir types",
-    "type-artifacts:check": "bun run build:types && test -z \"$(git status --porcelain --untracked-files=all -- types)\"",
+    "generated-artifacts:check": "bun run build && test -z \"$(git status --porcelain --untracked-files=all -- dist types)\"",
     "contract:check": "contracts repo-conformance .",
     "artifact-scan": "bun scripts/artifact-scan.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "prepare": "bun run build:runtime",
     "prepack": "bun run build && bun run artifact-scan",
     "prepublishOnly": "bun run test && bun run build"
   },
