@@ -1,0 +1,227 @@
+export type EventSeverity = "debug" | "info" | "notice" | "warning" | "error" | "critical";
+export type EventData = Record<string, unknown>;
+export interface EventEnvelope<TData extends EventData = EventData> {
+    id: string;
+    source: string;
+    type: string;
+    time: string;
+    subject?: string;
+    severity: EventSeverity;
+    data: TData;
+    message?: string;
+    dedupeKey?: string;
+    schemaVersion: string;
+    metadata: Record<string, unknown>;
+}
+export interface EventInput<TData extends EventData = EventData> {
+    id?: string;
+    source: string;
+    type: string;
+    time?: string | Date;
+    subject?: string;
+    severity?: EventSeverity;
+    data?: TData;
+    message?: string;
+    dedupeKey?: string;
+    schemaVersion?: string;
+    metadata?: Record<string, unknown>;
+}
+export type StringMatcher = string | string[];
+export type FieldMatcherValue = StringMatcher | number | boolean | null;
+export interface NegativeFieldMatcher {
+    not: FieldMatcherValue;
+}
+export type FieldMatcher = FieldMatcherValue | NegativeFieldMatcher;
+export interface EventFilter {
+    source?: StringMatcher;
+    type?: StringMatcher;
+    subject?: StringMatcher;
+    severity?: StringMatcher;
+    data?: Record<string, FieldMatcher>;
+    metadata?: Record<string, FieldMatcher>;
+}
+export interface RetryPolicy {
+    maxAttempts?: number;
+    backoffMs?: number;
+    multiplier?: number;
+}
+export interface RedactionConfig {
+    paths?: string[];
+    replacement?: string;
+}
+export interface WebhookTransportConfig {
+    url: string;
+    /**
+     * Legacy inline HMAC secret. Durable stores should reject this field so
+     * credential material is never persisted with channel configuration.
+     */
+    secret?: string;
+    /**
+     * Runtime-only HMAC secret reference, for example
+     * `env:HASNA_NOTES_WEBHOOK_SECRET`.
+     */
+    secretRef?: string;
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+}
+export interface CommandTransportConfig {
+    command: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+    timeoutMs?: number;
+}
+export type TransportKind = "webhook" | "command" | "email" | "sse" | "mcp-relay";
+export interface ChannelConfig {
+    id: string;
+    name?: string;
+    enabled: boolean;
+    transport: TransportKind;
+    filters?: EventFilter[];
+    webhook?: WebhookTransportConfig;
+    command?: CommandTransportConfig;
+    retry?: RetryPolicy;
+    redact?: RedactionConfig;
+    createdAt: string;
+    updatedAt: string;
+    metadata?: Record<string, unknown>;
+}
+export interface DeliveryAttempt {
+    attempt: number;
+    status: "success" | "failed" | "skipped";
+    startedAt: string;
+    completedAt: string;
+    responseStatus?: number;
+    responseBody?: string;
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+    nextBackoffMs?: number;
+}
+export interface DeliveryResult {
+    id: string;
+    eventId: string;
+    channelId: string;
+    transport: TransportKind;
+    status: "success" | "failed" | "skipped";
+    attempts: DeliveryAttempt[];
+    createdAt: string;
+    completedAt: string;
+    metadata?: Record<string, unknown>;
+}
+export type EventRedactor = (event: EventEnvelope, channel: ChannelConfig) => EventEnvelope | Promise<EventEnvelope>;
+export interface EmitOptions {
+    deliver?: boolean;
+    dedupe?: boolean;
+    redactSensitiveData?: boolean;
+    /**
+     * Per-emit override for the opt-in catalog validator hook. When true the
+     * event is validated against the client's `EventTypeCatalog` before it is
+     * stored or delivered (types not registered in the catalog always pass);
+     * when false validation is skipped even if the client enabled
+     * `validateCatalogTypes`. Defaults to the client-level setting (off).
+     */
+    validate?: boolean;
+}
+export interface EventPageOptions {
+    eventId?: string;
+    source?: string;
+    type?: string;
+    cursor?: string;
+    limit?: number;
+}
+export interface EventPage {
+    events: EventEnvelope[];
+    cursor?: string;
+    nextCursor?: string;
+    hasMore: boolean;
+}
+export interface EventAppendOptions {
+    dedupe?: boolean;
+}
+export interface EventAppendResult<TData extends EventData = EventData> {
+    event: EventEnvelope<TData>;
+    stored: boolean;
+    deduped: boolean;
+    identity: {
+        id: string;
+        dedupeKey?: string;
+    };
+}
+export interface ReplayOptions extends EventPageOptions {
+    dryRun?: boolean;
+}
+export interface ReplayResult {
+    events: EventEnvelope[];
+    deliveries: DeliveryResult[];
+    cursor?: string;
+    nextCursor?: string;
+    hasMore: boolean;
+}
+export interface StoredEventsData {
+    channels: ChannelConfig[];
+    events: EventEnvelope[];
+    deliveries: DeliveryResult[];
+}
+export interface EmitResult<TData extends EventData = EventData> {
+    event: EventEnvelope<TData>;
+    deliveries: DeliveryResult[];
+    deduped: boolean;
+}
+export type EventsStorageMode = "local-files" | "local-sqlite" | "remote-postgres" | "remote-s3" | "remote-aws" | "custom";
+export interface EventsStoreRuntime {
+    mode: EventsStorageMode;
+    name: string;
+    remote: boolean;
+    localFiles: boolean;
+    localSqlite: boolean;
+    postgres: boolean;
+    s3: boolean;
+    aws: boolean;
+    durable: boolean;
+    idempotency: "best-effort-local" | "atomic-store" | "consumer-owned";
+    replayCursors: boolean;
+    description: string;
+}
+export interface EventsStatus {
+    service: "events";
+    schemaVersion: "1.0";
+    dataDir: string;
+    storage: EventsStoreRuntime;
+    env: {
+        primary: "HASNA_EVENTS_DIR";
+        fallback: "HASNA_EVENTS_HOME";
+        active: "HASNA_EVENTS_DIR" | "HASNA_EVENTS_HOME" | null;
+    };
+    files: {
+        channels: {
+            path: string;
+            exists: boolean;
+            records: number;
+        };
+        events: {
+            path: string;
+            exists: boolean;
+            records: number;
+        };
+        deliveries: {
+            path: string;
+            exists: boolean;
+            records: number;
+        };
+    };
+    counts: {
+        channels: number;
+        enabledChannels: number;
+        disabledChannels: number;
+        events: number;
+        deliveries: number;
+    };
+    transports: Record<string, number>;
+    safety: {
+        includesEventPayloads: false;
+        includesWebhookSecrets: false;
+        listOutputsRedactSecrets: true;
+        statusOutputIsMetadataOnly: true;
+    };
+}

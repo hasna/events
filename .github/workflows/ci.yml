@@ -28,5 +28,8 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Check committed type artifacts
+        run: bun run type-artifacts:check
+
       - name: Test
         run: bun test
