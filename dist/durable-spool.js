@@ -12,6 +12,25 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 
+// src/redaction.ts
+function redactSensitiveKeys(event, replacement = "[REDACTED]") {
+  return redactValue(event, replacement);
+}
+function shouldRedactKey(key) {
+  return /secret|token|password|api[_-]?key|authorization/i.test(key);
+}
+function redactValue(value, replacement) {
+  if (Array.isArray(value))
+    return value.map((item) => redactValue(item, replacement));
+  if (!value || typeof value !== "object")
+    return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    shouldRedactKey(key) ? replacement : redactValue(item, replacement)
+  ]));
+}
+
+// src/durable-spool.ts
 class DurableEventSpool {
   dataDir;
   inboxDir;
@@ -22,7 +41,7 @@ class DurableEventSpool {
     this.inboxDir = join(options.dataDir, "spool", "inbox");
   }
   async enqueue(input) {
-    const event = createSpoolEvent(input);
+    const event = redactSensitiveKeys(createSpoolEvent(input));
     await this.ensureInbox();
     const finalPath = this.pathFor(event);
     const tempPath = join(this.inboxDir, `.tmp-${process.pid}-${randomUUID()}`);

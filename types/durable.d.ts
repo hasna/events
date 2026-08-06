@@ -24,6 +24,7 @@ export interface DurableDrainResult {
     delivered: number;
     retried: number;
     dead: number;
+    lost: number;
     deliveries: DeliveryResult[];
 }
 export interface DurableSpoolImportOptions {
@@ -74,7 +75,7 @@ export interface DurableDeliveryJob {
     workerId: string;
 }
 export interface DurableSettleResult {
-    status: "delivered" | "retry" | "dead";
+    status: "delivered" | "retry" | "dead" | "lost";
     delivery?: DeliveryResult;
 }
 export declare function defaultWebhookSecretResolver(reference: string): string | undefined;
@@ -102,5 +103,7 @@ export declare class DurableEventsBroker {
     private count;
     private immediate;
     private ensureSchema;
+    private createSchemaV1;
+    private assertSchemaV1;
     private secureDatabaseFiles;
 }

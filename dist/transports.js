@@ -45,6 +45,11 @@ function truncate(value, max = 4096) {
 function buildWebhookRequest(event, channel, options = {}) {
   if (!channel.webhook)
     throw new Error(`Channel ${channel.id} has no webhook config`);
+  for (const name of Object.keys(channel.webhook.headers ?? {})) {
+    if (/^x-hasna-/i.test(name)) {
+      throw new Error(`Webhook header ${name} is reserved for signed delivery metadata`);
+    }
+  }
   const body = JSON.stringify(event);
   const timestamp = options.timestamp ?? new Date().toISOString();
   const headers = {
@@ -52,8 +57,8 @@ function buildWebhookRequest(event, channel, options = {}) {
     "User-Agent": "@hasna/events",
     "X-Hasna-Event-Id": event.id,
     "X-Hasna-Event-Type": event.type,
-    "X-Hasna-Timestamp": timestamp,
-    ...channel.webhook.headers
+    ...channel.webhook.headers,
+    "X-Hasna-Timestamp": timestamp
   };
   const secret = options.secret ?? channel.webhook.secret;
   if (secret) {

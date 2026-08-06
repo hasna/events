@@ -14,6 +14,7 @@ import {
 import { join } from "node:path";
 import { channelMatchesEvent } from "./filter.js";
 import { createEvent } from "./index.js";
+import { redactPaths, redactSensitiveKeys } from "./redaction.js";
 import { createDeliveryResult, dispatchChannel, type TransportDispatchOptions, type WebhookSecretResolver } from "./transports.js";
 import type {
   ChannelConfig,
@@ -26,6 +27,18 @@ import type {
 } from "./types.js";
 
 const DURABLE_SCHEMA_VERSION = 1;
+const MAX_RETRY_ATTEMPTS = 1_000;
+const MAX_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1_000;
+const MAX_RETRY_MULTIPLIER = 100;
+const REQUIRED_SCHEMA_OBJECTS = [
+  "channels",
+  "events",
+  "events_dedupe_key_unique",
+  "events_source_type_idx",
+  "outbox",
+  "outbox_due_idx",
+  "deliveries",
+] as const;
 
 export interface DurableEventsBrokerOptions extends TransportDispatchOptions {
   dataDir: string;
@@ -55,6 +68,7 @@ export interface DurableDrainResult {
   delivered: number;
   retried: number;
   dead: number;
+  lost: number;
   deliveries: DeliveryResult[];
 }
 
@@ -113,7 +127,7 @@ export interface DurableDeliveryJob {
 }
 
 export interface DurableSettleResult {
-  status: "delivered" | "retry" | "dead";
+  status: "delivered" | "retry" | "dead" | "lost";
   delivery?: DeliveryResult;
 }
 
@@ -169,12 +183,17 @@ export class DurableEventsBroker {
     mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
     chmodSync(this.dataDir, 0o700);
     this.db = new Database(this.databasePath, { create: true, strict: true });
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    this.db.exec("PRAGMA synchronous = FULL;");
-    this.db.exec("PRAGMA foreign_keys = ON;");
-    this.db.exec("PRAGMA busy_timeout = 5000;");
-    this.ensureSchema();
-    this.secureDatabaseFiles();
+    try {
+      this.db.exec("PRAGMA journal_mode = WAL;");
+      this.db.exec("PRAGMA synchronous = FULL;");
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      this.db.exec("PRAGMA busy_timeout = 5000;");
+      this.ensureSchema();
+      this.secureDatabaseFiles();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
 
   close(): void {
@@ -197,6 +216,7 @@ export class DurableEventsBroker {
       throw new Error("Durable SQLite webhook secretRef must be a runtime reference");
     }
     if (input.webhook) validateDurableWebhookConfig(input.webhook);
+    if (input.retry !== undefined) validateRetryPolicy(input.retry);
     const timestamp = this.now().toISOString();
     const existing = this.db.query("SELECT config_json FROM channels WHERE id = ?").get(input.id) as ChannelRow | null;
     const existingChannel = existing ? parseJson<ChannelConfig>(existing.config_json) : undefined;
@@ -228,7 +248,7 @@ export class DurableEventsBroker {
     input: EventInput<TData>,
     options: DurableEnqueueOptions = {},
   ): DurableEnqueueResult<TData> {
-    const event = createEvent({ ...input, time: input.time ?? this.now() });
+    const event = redactSensitiveKeys(createEvent({ ...input, time: input.time ?? this.now() }));
     const result = this.immediate(() => {
       if (options.dedupe !== false) {
         const existing = this.findEvent(event.id, event.dedupeKey);
@@ -264,20 +284,23 @@ export class DurableEventsBroker {
 
   async drain(options: DurableDrainOptions = {}): Promise<DurableDrainResult> {
     const workerId = options.workerId ?? randomUUID();
-    const jobs = this.claim({
-      workerId,
-      limit: normalizePositiveInteger(options.limit, 100, "limit"),
-      leaseMs: normalizePositiveInteger(options.leaseMs, 60_000, "leaseMs"),
-    });
+    const limit = normalizePositiveInteger(options.limit, 100, "limit");
+    const leaseMs = normalizePositiveInteger(options.leaseMs, 60_000, "leaseMs");
+    const attemptedIds = new Set<string>();
     const summary: DurableDrainResult = {
       workerId,
-      claimed: jobs.length,
+      claimed: 0,
       delivered: 0,
       retried: 0,
       dead: 0,
+      lost: 0,
       deliveries: [],
     };
-    for (const job of jobs) {
+    while (summary.claimed < limit) {
+      const [job] = this.claim({ workerId, limit: 1, leaseMs, excludeIds: [...attemptedIds] });
+      if (!job) break;
+      attemptedIds.add(job.id);
+      summary.claimed += 1;
       let attempt: DeliveryAttempt;
       try {
         attempt = await dispatchChannel(job.event, job.channel, this.transportOptions);
@@ -297,6 +320,7 @@ export class DurableEventsBroker {
       if (settled.status === "delivered") summary.delivered += 1;
       if (settled.status === "retry") summary.retried += 1;
       if (settled.status === "dead") summary.dead += 1;
+      if (settled.status === "lost") summary.lost += 1;
       if (settled.delivery) summary.deliveries.push(settled.delivery);
     }
     this.secureDatabaseFiles();
@@ -412,19 +436,24 @@ export class DurableEventsBroker {
     return row?.next_at === null || row?.next_at === undefined ? undefined : Number(row.next_at);
   }
 
-  private claim(options: { workerId: string; limit: number; leaseMs: number }): DurableDeliveryJob[] {
+  private claim(options: { workerId: string; limit: number; leaseMs: number; excludeIds?: string[] }): DurableDeliveryJob[] {
     return this.immediate(() => {
       const nowMs = this.now().getTime();
+      const excludeIds = options.excludeIds ?? [];
+      const exclusion = excludeIds.length > 0
+        ? ` AND o.id NOT IN (${excludeIds.map(() => "?").join(", ")})`
+        : "";
       const rows = this.db.query(`
         SELECT o.id, o.event_json, c.config_json AS channel_json,
                o.attempt_count, o.attempts_json
         FROM outbox o
         JOIN channels c ON c.id = o.channel_id AND c.enabled = 1
-        WHERE (o.status = 'pending' AND o.available_at <= ?)
-           OR (o.status = 'leased' AND o.lease_expires_at <= ?)
+        WHERE ((o.status = 'pending' AND o.available_at <= ?)
+           OR (o.status = 'leased' AND o.lease_expires_at <= ?))
+          ${exclusion}
         ORDER BY o.available_at, o.created_at, o.id
         LIMIT ?
-      `).all(nowMs, nowMs, options.limit) as OutboxRow[];
+      `).all(nowMs, nowMs, ...excludeIds, options.limit) as OutboxRow[];
       const jobs: DurableDeliveryJob[] = [];
       for (const row of rows) {
         const nextAttempt = Number(row.attempt_count) + 1;
@@ -466,7 +495,7 @@ export class DurableEventsBroker {
         SELECT attempts_json FROM outbox
         WHERE id = ? AND status = 'leased' AND lease_owner = ?
       `).get(job.id, job.workerId) as Pick<OutboxRow, "attempts_json"> | null;
-      if (!row) throw new Error("Durable delivery lease was lost before settlement");
+      if (!row) return { status: "lost" };
       const attempts = parseJson<DeliveryAttempt[]>(row.attempts_json);
       attempts.push(attempt);
       if (attempt.status === "success") {
@@ -477,7 +506,7 @@ export class DurableEventsBroker {
 
       const retry = normalizeRetryPolicy(job.channel.retry);
       if (job.attempt < retry.maxAttempts) {
-        const backoffMs = Math.round(retry.backoffMs * retry.multiplier ** (job.attempt - 1));
+        const backoffMs = retryBackoffMs(retry, job.attempt);
         attempt.nextBackoffMs = backoffMs;
         this.db.query(`
           UPDATE outbox
@@ -536,6 +565,11 @@ export class DurableEventsBroker {
     for (const row of channels) {
       const channel = parseJson<ChannelConfig>(row.config_json);
       if (!channelMatchesEvent(channel, event)) continue;
+      const channelEvent = redactPaths(
+        event,
+        channel.redact?.paths ?? [],
+        channel.redact?.replacement ?? "[REDACTED]",
+      );
       const timestamp = this.now().toISOString();
       const inserted = this.db.query(`
         INSERT OR IGNORE INTO outbox (
@@ -546,7 +580,7 @@ export class DurableEventsBroker {
         randomUUID(),
         event.id,
         channel.id,
-        JSON.stringify(event),
+        JSON.stringify(channelEvent),
         JSON.stringify(channel),
         this.now().getTime(),
         timestamp,
@@ -575,6 +609,28 @@ export class DurableEventsBroker {
   }
 
   private ensureSchema(): void {
+    const row = this.db.query("PRAGMA user_version").get() as { user_version: number } | null;
+    const version = Number(row?.user_version);
+    if (!Number.isInteger(version) || version < 0) {
+      throw new Error("Durable SQLite schema version is invalid");
+    }
+    if (version > DURABLE_SCHEMA_VERSION) {
+      throw new Error(
+        `Durable SQLite schema version ${version} is newer than supported version ${DURABLE_SCHEMA_VERSION}`,
+      );
+    }
+    if (version === 0) {
+      this.immediate(() => {
+        this.createSchemaV1();
+        this.db.exec(`PRAGMA user_version = ${DURABLE_SCHEMA_VERSION};`);
+        this.assertSchemaV1();
+      });
+      return;
+    }
+    this.assertSchemaV1();
+  }
+
+  private createSchemaV1(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS channels (
         id TEXT PRIMARY KEY,
@@ -623,8 +679,19 @@ export class DurableEventsBroker {
         created_at TEXT NOT NULL
       );
 
-      PRAGMA user_version = ${DURABLE_SCHEMA_VERSION};
     `);
+  }
+
+  private assertSchemaV1(): void {
+    const rows = this.db.query(`
+      SELECT name FROM sqlite_master
+      WHERE type IN ('table', 'index') AND name IN (${REQUIRED_SCHEMA_OBJECTS.map(() => "?").join(", ")})
+    `).all(...REQUIRED_SCHEMA_OBJECTS) as Array<{ name: string }>;
+    const found = new Set(rows.map((row) => row.name));
+    const missing = REQUIRED_SCHEMA_OBJECTS.filter((name) => !found.has(name));
+    if (missing.length > 0) {
+      throw new Error(`Durable SQLite schema version 1 is incomplete: missing ${missing.join(", ")}`);
+    }
   }
 
   private secureDatabaseFiles(): void {
@@ -642,11 +709,37 @@ function normalizePositiveInteger(value: number | undefined, fallback: number, n
 }
 
 function normalizeRetryPolicy(policy: RetryPolicy | undefined): Required<RetryPolicy> {
-  return {
-    maxAttempts: Math.max(1, Math.floor(policy?.maxAttempts ?? 1)),
-    backoffMs: Math.max(0, Math.floor(policy?.backoffMs ?? 250)),
-    multiplier: Math.max(1, policy?.multiplier ?? 2),
+  const normalized = {
+    maxAttempts: policy?.maxAttempts ?? 1,
+    backoffMs: policy?.backoffMs ?? 250,
+    multiplier: policy?.multiplier ?? 2,
   };
+  validateRetryPolicy(normalized);
+  return normalized;
+}
+
+function validateRetryPolicy(policy: RetryPolicy): void {
+  const maxAttempts = policy.maxAttempts ?? 1;
+  const backoffMs = policy.backoffMs ?? 250;
+  const multiplier = policy.multiplier ?? 2;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAX_RETRY_ATTEMPTS) {
+    throw new Error(`retry.maxAttempts must be an integer from 1 to ${MAX_RETRY_ATTEMPTS}`);
+  }
+  if (!Number.isInteger(backoffMs) || backoffMs < 0 || backoffMs > MAX_RETRY_DELAY_MS) {
+    throw new Error(`retry.backoffMs must be an integer from 0 to ${MAX_RETRY_DELAY_MS}`);
+  }
+  if (!Number.isFinite(multiplier) || multiplier < 1 || multiplier > MAX_RETRY_MULTIPLIER) {
+    throw new Error(`retry.multiplier must be finite and from 1 to ${MAX_RETRY_MULTIPLIER}`);
+  }
+  if (maxAttempts > 1) retryBackoffMs({ maxAttempts, backoffMs, multiplier }, maxAttempts - 1);
+}
+
+function retryBackoffMs(policy: Required<RetryPolicy>, attempt: number): number {
+  const delay = Math.round(policy.backoffMs * policy.multiplier ** (attempt - 1));
+  if (!Number.isSafeInteger(delay) || delay < 0 || delay > MAX_RETRY_DELAY_MS) {
+    throw new Error(`retry policy must not produce a delay above ${MAX_RETRY_DELAY_MS}ms`);
+  }
+  return delay;
 }
 
 function parseJson<T>(value: string): T {
@@ -672,6 +765,9 @@ function validateDurableWebhookConfig(webhook: WebhookTransportConfig): void {
     }
   }
   for (const name of Object.keys(webhook.headers ?? {})) {
+    if (/^x-hasna-/i.test(name)) {
+      throw new Error("Durable webhook X-Hasna headers are reserved for signed delivery metadata");
+    }
     if (/authorization|cookie|api[-_]?key|token|secret|credential/i.test(name)) {
       throw new Error("Durable webhook credential headers are not persisted; use webhook.secretRef");
     }

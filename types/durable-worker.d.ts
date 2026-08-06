@@ -22,5 +22,6 @@ export interface DurableWorkerResult {
     delivered: number;
     retried: number;
     dead: number;
+    lost: number;
 }
 export declare function runDurableWorker(options: DurableWorkerOptions): Promise<DurableWorkerResult>;

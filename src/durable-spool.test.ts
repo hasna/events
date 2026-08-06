@@ -70,6 +70,30 @@ describe("DurableEventSpool", () => {
     expect(result).toEqual({ recovered: 1, deduped: 0, cleaned: 1 });
     expect((await readdir(inbox)).some((name) => name.startsWith(".tmp-"))).toBe(false);
   });
+
+  test("redacts sensitive keys before persisting the producer spool record", async () => {
+    const dataDir = await temporaryDataDir();
+    const spool = new DurableEventSpool({ dataDir });
+    const result = await spool.enqueue({
+      id: "producer-redaction",
+      source: "notes",
+      type: "note.created",
+      data: {
+        apiKey: "producer-sensitive-canary",
+        nested: { accessToken: "nested-producer-canary" },
+        title: "safe title",
+      },
+    });
+    expect(result.event.data).toEqual({
+      apiKey: "[REDACTED]",
+      nested: { accessToken: "[REDACTED]" },
+      title: "safe title",
+    });
+    const [name] = (await readdir(spool.inboxDir)).filter((entry) => entry.endsWith(".json"));
+    const stored = await readFile(join(spool.inboxDir, name!), "utf8");
+    expect(stored).not.toContain("producer-sensitive-canary");
+    expect(stored).not.toContain("nested-producer-canary");
+  });
 });
 
 async function temporaryDataDir(): Promise<string> {

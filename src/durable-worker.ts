@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { DurableEventSpool } from "./durable-spool.js";
 import { DurableEventsBroker, type DurableDrainResult, type DurableSpoolImportResult } from "./durable.js";
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export interface DurableWorkerOptions {
   broker: DurableEventsBroker;
   signal: AbortSignal;
@@ -29,6 +31,7 @@ export interface DurableWorkerResult {
   delivered: number;
   retried: number;
   dead: number;
+  lost: number;
 }
 
 export async function runDurableWorker(options: DurableWorkerOptions): Promise<DurableWorkerResult> {
@@ -52,6 +55,7 @@ export async function runDurableWorker(options: DurableWorkerOptions): Promise<D
     delivered: 0,
     retried: 0,
     dead: 0,
+    lost: 0,
   };
 
   return new Promise<DurableWorkerResult>((resolve, reject) => {
@@ -86,7 +90,7 @@ export async function runDurableWorker(options: DurableWorkerOptions): Promise<D
       if (stopped) return;
       const nextWakeAt = options.broker.nextWakeAt();
       if (nextWakeAt === undefined) return;
-      const delay = Math.max(0, nextWakeAt - Date.now());
+      const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, nextWakeAt - Date.now()));
       retryTimer = setTimeout(() => {
         retryTimer = undefined;
         void runCycle();
@@ -112,6 +116,7 @@ export async function runDurableWorker(options: DurableWorkerOptions): Promise<D
         totals.delivered += drained.delivered;
         totals.retried += drained.retried;
         totals.dead += drained.dead;
+        totals.lost += drained.lost;
         await options.onCycle?.(cycle);
         if (imported.scanned >= limit || drained.claimed >= limit) rerun = true;
       } catch (error) {

@@ -447,6 +447,11 @@ function truncate(value, max = 4096) {
 function buildWebhookRequest(event, channel, options = {}) {
   if (!channel.webhook)
     throw new Error(`Channel ${channel.id} has no webhook config`);
+  for (const name of Object.keys(channel.webhook.headers ?? {})) {
+    if (/^x-hasna-/i.test(name)) {
+      throw new Error(`Webhook header ${name} is reserved for signed delivery metadata`);
+    }
+  }
   const body = JSON.stringify(event);
   const timestamp = options.timestamp ?? new Date().toISOString();
   const headers = {
@@ -454,8 +459,8 @@ function buildWebhookRequest(event, channel, options = {}) {
     "User-Agent": "@hasna/events",
     "X-Hasna-Event-Id": event.id,
     "X-Hasna-Event-Type": event.type,
-    "X-Hasna-Timestamp": timestamp,
-    ...channel.webhook.headers
+    ...channel.webhook.headers,
+    "X-Hasna-Timestamp": timestamp
   };
   const secret = options.secret ?? channel.webhook.secret;
   if (secret) {
@@ -1154,6 +1159,48 @@ function requireTimestamp(value, key, issues) {
 
 // src/index.ts
 import { randomUUID as randomUUID2 } from "crypto";
+
+// src/redaction.ts
+function redactPaths(event, paths, replacement = "[REDACTED]") {
+  if (paths.length === 0)
+    return event;
+  const copy = structuredClone(event);
+  for (const path of paths) {
+    setPath(copy, path, replacement);
+  }
+  return copy;
+}
+function redactSensitiveKeys(event, replacement = "[REDACTED]") {
+  return redactValue(event, replacement);
+}
+function shouldRedactKey(key) {
+  return /secret|token|password|api[_-]?key|authorization/i.test(key);
+}
+function redactValue(value, replacement) {
+  if (Array.isArray(value))
+    return value.map((item) => redactValue(item, replacement));
+  if (!value || typeof value !== "object")
+    return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    shouldRedactKey(key) ? replacement : redactValue(item, replacement)
+  ]));
+}
+function setPath(input, path, replacement) {
+  const parts = path.split(".");
+  let cursor = input;
+  for (const part of parts.slice(0, -1)) {
+    const next = cursor[part];
+    if (!next || typeof next !== "object")
+      return;
+    cursor = next;
+  }
+  const last = parts.at(-1);
+  if (last && last in cursor)
+    cursor[last] = replacement;
+}
+
+// src/index.ts
 function createEvent(input) {
   return {
     id: input.id ?? randomUUID2(),
@@ -1361,15 +1408,6 @@ class EventsClient {
     return createDeliveryResult(event, channel, attempts);
   }
 }
-function redactPaths(event, paths, replacement = "[REDACTED]") {
-  if (paths.length === 0)
-    return event;
-  const copy = structuredClone(event);
-  for (const path of paths) {
-    setPath(copy, path, replacement);
-  }
-  return copy;
-}
 function sanitizeChannelForOutput(channel) {
   const copy = structuredClone(channel);
   if (copy.webhook?.secret)
@@ -1381,35 +1419,6 @@ function sanitizeChannelForOutput(channel) {
 }
 function sanitizeChannelsForOutput(channels) {
   return channels.map(sanitizeChannelForOutput);
-}
-function redactSensitiveKeys(event, replacement = "[REDACTED]") {
-  return redactValue(event, replacement);
-}
-function shouldRedactKey(key) {
-  return /secret|token|password|api[_-]?key|authorization/i.test(key);
-}
-function redactValue(value, replacement) {
-  if (Array.isArray(value))
-    return value.map((item) => redactValue(item, replacement));
-  if (!value || typeof value !== "object")
-    return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-    key,
-    shouldRedactKey(key) ? replacement : redactValue(item, replacement)
-  ]));
-}
-function setPath(input, path, replacement) {
-  const parts = path.split(".");
-  let cursor = input;
-  for (const part of parts.slice(0, -1)) {
-    const next = cursor[part];
-    if (!next || typeof next !== "object")
-      return;
-    cursor = next;
-  }
-  const last = parts.at(-1);
-  if (last && last in cursor)
-    cursor[last] = replacement;
 }
 function queryClientEvents(events, options) {
   let rows = events;

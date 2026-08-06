@@ -10,6 +10,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { redactSensitiveKeys } from "./redaction.js";
 import type { EventEnvelope, EventInput } from "./types.js";
 
 export interface DurableEventSpoolOptions {
@@ -45,7 +46,7 @@ export class DurableEventSpool {
   async enqueue<TData extends Record<string, unknown>>(
     input: EventInput<TData>,
   ): Promise<DurableSpoolEnqueueResult<TData>> {
-    const event = createSpoolEvent(input);
+    const event = redactSensitiveKeys(createSpoolEvent(input));
     await this.ensureInbox();
     const finalPath = this.pathFor(event);
     const tempPath = join(this.inboxDir, `.tmp-${process.pid}-${randomUUID()}`);

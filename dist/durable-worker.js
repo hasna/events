@@ -18,6 +18,47 @@ import {
 } from "fs/promises";
 import { join } from "path";
 
+// src/redaction.ts
+function redactPaths(event, paths, replacement = "[REDACTED]") {
+  if (paths.length === 0)
+    return event;
+  const copy = structuredClone(event);
+  for (const path of paths) {
+    setPath(copy, path, replacement);
+  }
+  return copy;
+}
+function redactSensitiveKeys(event, replacement = "[REDACTED]") {
+  return redactValue(event, replacement);
+}
+function shouldRedactKey(key) {
+  return /secret|token|password|api[_-]?key|authorization/i.test(key);
+}
+function redactValue(value, replacement) {
+  if (Array.isArray(value))
+    return value.map((item) => redactValue(item, replacement));
+  if (!value || typeof value !== "object")
+    return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    shouldRedactKey(key) ? replacement : redactValue(item, replacement)
+  ]));
+}
+function setPath(input, path, replacement) {
+  const parts = path.split(".");
+  let cursor = input;
+  for (const part of parts.slice(0, -1)) {
+    const next = cursor[part];
+    if (!next || typeof next !== "object")
+      return;
+    cursor = next;
+  }
+  const last = parts.at(-1);
+  if (last && last in cursor)
+    cursor[last] = replacement;
+}
+
+// src/durable-spool.ts
 class DurableEventSpool {
   dataDir;
   inboxDir;
@@ -28,7 +69,7 @@ class DurableEventSpool {
     this.inboxDir = join(options.dataDir, "spool", "inbox");
   }
   async enqueue(input) {
-    const event = createSpoolEvent(input);
+    const event = redactSensitiveKeys(createSpoolEvent(input));
     await this.ensureInbox();
     const finalPath = this.pathFor(event);
     const tempPath = join(this.inboxDir, `.tmp-${process.pid}-${randomUUID()}`);
@@ -168,6 +209,7 @@ function isNodeError(error, code) {
 }
 
 // src/durable-worker.ts
+var MAX_TIMER_DELAY_MS = 2147483647;
 async function runDurableWorker(options) {
   const workerId = options.workerId ?? randomUUID2();
   const limit = positiveInteger(options.limit, 100, "limit");
@@ -187,7 +229,8 @@ async function runDurableWorker(options) {
     deduped: 0,
     delivered: 0,
     retried: 0,
-    dead: 0
+    dead: 0,
+    lost: 0
   };
   return new Promise((resolve, reject) => {
     let watcher;
@@ -226,7 +269,7 @@ async function runDurableWorker(options) {
       const nextWakeAt = options.broker.nextWakeAt();
       if (nextWakeAt === undefined)
         return;
-      const delay = Math.max(0, nextWakeAt - Date.now());
+      const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, nextWakeAt - Date.now()));
       retryTimer = setTimeout(() => {
         retryTimer = undefined;
         runCycle();
@@ -252,6 +295,7 @@ async function runDurableWorker(options) {
         totals.delivered += drained.delivered;
         totals.retried += drained.retried;
         totals.dead += drained.dead;
+        totals.lost += drained.lost;
         await options.onCycle?.(cycle);
         if (imported.scanned >= limit || drained.claimed >= limit)
           rerun = true;

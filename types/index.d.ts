@@ -9,6 +9,7 @@ export * from "./signing.js";
 export * from "./transports.js";
 export * from "./catalog.js";
 export * from "./app-event.js";
+export { redactPaths, redactSensitiveKeys } from "./redaction.js";
 export interface EventsClientOptions extends TransportDispatchOptions {
     store?: EventsStore;
     dataDir?: string;
@@ -59,7 +60,5 @@ export declare class EventsClient {
     private applyRedaction;
     private deliverWithRetry;
 }
-export declare function redactPaths<T extends EventEnvelope>(event: T, paths: string[], replacement?: string): T;
 export declare function sanitizeChannelForOutput(channel: ChannelConfig): ChannelConfig;
 export declare function sanitizeChannelsForOutput(channels: ChannelConfig[]): ChannelConfig[];
-export declare function redactSensitiveKeys<T extends EventEnvelope>(event: T, replacement?: string): T;

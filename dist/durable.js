@@ -447,6 +447,11 @@ function truncate(value, max = 4096) {
 function buildWebhookRequest(event, channel, options = {}) {
   if (!channel.webhook)
     throw new Error(`Channel ${channel.id} has no webhook config`);
+  for (const name of Object.keys(channel.webhook.headers ?? {})) {
+    if (/^x-hasna-/i.test(name)) {
+      throw new Error(`Webhook header ${name} is reserved for signed delivery metadata`);
+    }
+  }
   const body = JSON.stringify(event);
   const timestamp = options.timestamp ?? new Date().toISOString();
   const headers = {
@@ -454,8 +459,8 @@ function buildWebhookRequest(event, channel, options = {}) {
     "User-Agent": "@hasna/events",
     "X-Hasna-Event-Id": event.id,
     "X-Hasna-Event-Type": event.type,
-    "X-Hasna-Timestamp": timestamp,
-    ...channel.webhook.headers
+    ...channel.webhook.headers,
+    "X-Hasna-Timestamp": timestamp
   };
   const secret = options.secret ?? channel.webhook.secret;
   if (secret) {
@@ -1154,6 +1159,48 @@ function requireTimestamp(value, key, issues) {
 
 // src/index.ts
 import { randomUUID as randomUUID2 } from "crypto";
+
+// src/redaction.ts
+function redactPaths(event, paths, replacement = "[REDACTED]") {
+  if (paths.length === 0)
+    return event;
+  const copy = structuredClone(event);
+  for (const path of paths) {
+    setPath(copy, path, replacement);
+  }
+  return copy;
+}
+function redactSensitiveKeys(event, replacement = "[REDACTED]") {
+  return redactValue(event, replacement);
+}
+function shouldRedactKey(key) {
+  return /secret|token|password|api[_-]?key|authorization/i.test(key);
+}
+function redactValue(value, replacement) {
+  if (Array.isArray(value))
+    return value.map((item) => redactValue(item, replacement));
+  if (!value || typeof value !== "object")
+    return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    shouldRedactKey(key) ? replacement : redactValue(item, replacement)
+  ]));
+}
+function setPath(input, path, replacement) {
+  const parts = path.split(".");
+  let cursor = input;
+  for (const part of parts.slice(0, -1)) {
+    const next = cursor[part];
+    if (!next || typeof next !== "object")
+      return;
+    cursor = next;
+  }
+  const last = parts.at(-1);
+  if (last && last in cursor)
+    cursor[last] = replacement;
+}
+
+// src/index.ts
 function createEvent(input) {
   return {
     id: input.id ?? randomUUID2(),
@@ -1361,15 +1408,6 @@ class EventsClient {
     return createDeliveryResult(event, channel, attempts);
   }
 }
-function redactPaths(event, paths, replacement = "[REDACTED]") {
-  if (paths.length === 0)
-    return event;
-  const copy = structuredClone(event);
-  for (const path of paths) {
-    setPath(copy, path, replacement);
-  }
-  return copy;
-}
 function sanitizeChannelForOutput(channel) {
   const copy = structuredClone(channel);
   if (copy.webhook?.secret)
@@ -1381,35 +1419,6 @@ function sanitizeChannelForOutput(channel) {
 }
 function sanitizeChannelsForOutput(channels) {
   return channels.map(sanitizeChannelForOutput);
-}
-function redactSensitiveKeys(event, replacement = "[REDACTED]") {
-  return redactValue(event, replacement);
-}
-function shouldRedactKey(key) {
-  return /secret|token|password|api[_-]?key|authorization/i.test(key);
-}
-function redactValue(value, replacement) {
-  if (Array.isArray(value))
-    return value.map((item) => redactValue(item, replacement));
-  if (!value || typeof value !== "object")
-    return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
-    key,
-    shouldRedactKey(key) ? replacement : redactValue(item, replacement)
-  ]));
-}
-function setPath(input, path, replacement) {
-  const parts = path.split(".");
-  let cursor = input;
-  for (const part of parts.slice(0, -1)) {
-    const next = cursor[part];
-    if (!next || typeof next !== "object")
-      return;
-    cursor = next;
-  }
-  const last = parts.at(-1);
-  if (last && last in cursor)
-    cursor[last] = replacement;
 }
 function queryClientEvents(events, options) {
   let rows = events;
@@ -1454,6 +1463,18 @@ import {
 } from "fs";
 import { join as join2 } from "path";
 var DURABLE_SCHEMA_VERSION = 1;
+var MAX_RETRY_ATTEMPTS = 1000;
+var MAX_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1000;
+var MAX_RETRY_MULTIPLIER = 100;
+var REQUIRED_SCHEMA_OBJECTS = [
+  "channels",
+  "events",
+  "events_dedupe_key_unique",
+  "events_source_type_idx",
+  "outbox",
+  "outbox_due_idx",
+  "deliveries"
+];
 function defaultWebhookSecretResolver(reference) {
   if (!reference.startsWith("env:"))
     throw new Error("Unsupported webhook secret reference scheme");
@@ -1483,12 +1504,17 @@ class DurableEventsBroker {
     mkdirSync(this.dataDir, { recursive: true, mode: 448 });
     chmodSync(this.dataDir, 448);
     this.db = new Database(this.databasePath, { create: true, strict: true });
-    this.db.exec("PRAGMA journal_mode = WAL;");
-    this.db.exec("PRAGMA synchronous = FULL;");
-    this.db.exec("PRAGMA foreign_keys = ON;");
-    this.db.exec("PRAGMA busy_timeout = 5000;");
-    this.ensureSchema();
-    this.secureDatabaseFiles();
+    try {
+      this.db.exec("PRAGMA journal_mode = WAL;");
+      this.db.exec("PRAGMA synchronous = FULL;");
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      this.db.exec("PRAGMA busy_timeout = 5000;");
+      this.ensureSchema();
+      this.secureDatabaseFiles();
+    } catch (error) {
+      this.db.close();
+      throw error;
+    }
   }
   close() {
     this.db.close();
@@ -1508,6 +1534,8 @@ class DurableEventsBroker {
     }
     if (input.webhook)
       validateDurableWebhookConfig(input.webhook);
+    if (input.retry !== undefined)
+      validateRetryPolicy(input.retry);
     const timestamp = this.now().toISOString();
     const existing = this.db.query("SELECT config_json FROM channels WHERE id = ?").get(input.id);
     const existingChannel = existing ? parseJson(existing.config_json) : undefined;
@@ -1534,7 +1562,7 @@ class DurableEventsBroker {
     return rows.map((row) => parseJson(row.config_json));
   }
   enqueue(input, options = {}) {
-    const event = createEvent({ ...input, time: input.time ?? this.now() });
+    const event = redactSensitiveKeys(createEvent({ ...input, time: input.time ?? this.now() }));
     const result = this.immediate(() => {
       if (options.dedupe !== false) {
         const existing = this.findEvent(event.id, event.dedupeKey);
@@ -1559,20 +1587,24 @@ class DurableEventsBroker {
   }
   async drain(options = {}) {
     const workerId = options.workerId ?? randomUUID3();
-    const jobs = this.claim({
-      workerId,
-      limit: normalizePositiveInteger(options.limit, 100, "limit"),
-      leaseMs: normalizePositiveInteger(options.leaseMs, 60000, "leaseMs")
-    });
+    const limit = normalizePositiveInteger(options.limit, 100, "limit");
+    const leaseMs = normalizePositiveInteger(options.leaseMs, 60000, "leaseMs");
+    const attemptedIds = new Set;
     const summary = {
       workerId,
-      claimed: jobs.length,
+      claimed: 0,
       delivered: 0,
       retried: 0,
       dead: 0,
+      lost: 0,
       deliveries: []
     };
-    for (const job of jobs) {
+    while (summary.claimed < limit) {
+      const [job] = this.claim({ workerId, limit: 1, leaseMs, excludeIds: [...attemptedIds] });
+      if (!job)
+        break;
+      attemptedIds.add(job.id);
+      summary.claimed += 1;
       let attempt;
       try {
         attempt = await dispatchChannel(job.event, job.channel, this.transportOptions);
@@ -1595,6 +1627,8 @@ class DurableEventsBroker {
         summary.retried += 1;
       if (settled.status === "dead")
         summary.dead += 1;
+      if (settled.status === "lost")
+        summary.lost += 1;
       if (settled.delivery)
         summary.deliveries.push(settled.delivery);
     }
@@ -1713,16 +1747,19 @@ class DurableEventsBroker {
   claim(options) {
     return this.immediate(() => {
       const nowMs = this.now().getTime();
+      const excludeIds = options.excludeIds ?? [];
+      const exclusion = excludeIds.length > 0 ? ` AND o.id NOT IN (${excludeIds.map(() => "?").join(", ")})` : "";
       const rows = this.db.query(`
         SELECT o.id, o.event_json, c.config_json AS channel_json,
                o.attempt_count, o.attempts_json
         FROM outbox o
         JOIN channels c ON c.id = o.channel_id AND c.enabled = 1
-        WHERE (o.status = 'pending' AND o.available_at <= ?)
-           OR (o.status = 'leased' AND o.lease_expires_at <= ?)
+        WHERE ((o.status = 'pending' AND o.available_at <= ?)
+           OR (o.status = 'leased' AND o.lease_expires_at <= ?))
+          ${exclusion}
         ORDER BY o.available_at, o.created_at, o.id
         LIMIT ?
-      `).all(nowMs, nowMs, options.limit);
+      `).all(nowMs, nowMs, ...excludeIds, options.limit);
       const jobs = [];
       for (const row of rows) {
         const nextAttempt = Number(row.attempt_count) + 1;
@@ -1757,7 +1794,7 @@ class DurableEventsBroker {
         WHERE id = ? AND status = 'leased' AND lease_owner = ?
       `).get(job.id, job.workerId);
       if (!row)
-        throw new Error("Durable delivery lease was lost before settlement");
+        return { status: "lost" };
       const attempts = parseJson(row.attempts_json);
       attempts.push(attempt);
       if (attempt.status === "success") {
@@ -1767,7 +1804,7 @@ class DurableEventsBroker {
       }
       const retry = normalizeRetryPolicy2(job.channel.retry);
       if (job.attempt < retry.maxAttempts) {
-        const backoffMs = Math.round(retry.backoffMs * retry.multiplier ** (job.attempt - 1));
+        const backoffMs = retryBackoffMs(retry, job.attempt);
         attempt.nextBackoffMs = backoffMs;
         this.db.query(`
           UPDATE outbox
@@ -1812,13 +1849,14 @@ class DurableEventsBroker {
       const channel = parseJson(row.config_json);
       if (!channelMatchesEvent(channel, event))
         continue;
+      const channelEvent = redactPaths(event, channel.redact?.paths ?? [], channel.redact?.replacement ?? "[REDACTED]");
       const timestamp = this.now().toISOString();
       const inserted = this.db.query(`
         INSERT OR IGNORE INTO outbox (
           id, event_id, channel_id, event_json, channel_json, status,
           attempt_count, available_at, attempts_json, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, '[]', ?, ?)
-      `).run(randomUUID3(), event.id, channel.id, JSON.stringify(event), JSON.stringify(channel), this.now().getTime(), timestamp, timestamp);
+      `).run(randomUUID3(), event.id, channel.id, JSON.stringify(channelEvent), JSON.stringify(channel), this.now().getTime(), timestamp, timestamp);
       queued += Number(inserted.changes);
     }
     return queued;
@@ -1839,6 +1877,25 @@ class DurableEventsBroker {
     }
   }
   ensureSchema() {
+    const row = this.db.query("PRAGMA user_version").get();
+    const version = Number(row?.user_version);
+    if (!Number.isInteger(version) || version < 0) {
+      throw new Error("Durable SQLite schema version is invalid");
+    }
+    if (version > DURABLE_SCHEMA_VERSION) {
+      throw new Error(`Durable SQLite schema version ${version} is newer than supported version ${DURABLE_SCHEMA_VERSION}`);
+    }
+    if (version === 0) {
+      this.immediate(() => {
+        this.createSchemaV1();
+        this.db.exec(`PRAGMA user_version = ${DURABLE_SCHEMA_VERSION};`);
+        this.assertSchemaV1();
+      });
+      return;
+    }
+    this.assertSchemaV1();
+  }
+  createSchemaV1() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS channels (
         id TEXT PRIMARY KEY,
@@ -1887,8 +1944,18 @@ class DurableEventsBroker {
         created_at TEXT NOT NULL
       );
 
-      PRAGMA user_version = ${DURABLE_SCHEMA_VERSION};
     `);
+  }
+  assertSchemaV1() {
+    const rows = this.db.query(`
+      SELECT name FROM sqlite_master
+      WHERE type IN ('table', 'index') AND name IN (${REQUIRED_SCHEMA_OBJECTS.map(() => "?").join(", ")})
+    `).all(...REQUIRED_SCHEMA_OBJECTS);
+    const found = new Set(rows.map((row) => row.name));
+    const missing = REQUIRED_SCHEMA_OBJECTS.filter((name) => !found.has(name));
+    if (missing.length > 0) {
+      throw new Error(`Durable SQLite schema version 1 is incomplete: missing ${missing.join(", ")}`);
+    }
   }
   secureDatabaseFiles() {
     for (const path of [this.databasePath, `${this.databasePath}-wal`, `${this.databasePath}-shm`]) {
@@ -1905,11 +1972,36 @@ function normalizePositiveInteger(value, fallback, name) {
   return resolved;
 }
 function normalizeRetryPolicy2(policy) {
-  return {
-    maxAttempts: Math.max(1, Math.floor(policy?.maxAttempts ?? 1)),
-    backoffMs: Math.max(0, Math.floor(policy?.backoffMs ?? 250)),
-    multiplier: Math.max(1, policy?.multiplier ?? 2)
+  const normalized = {
+    maxAttempts: policy?.maxAttempts ?? 1,
+    backoffMs: policy?.backoffMs ?? 250,
+    multiplier: policy?.multiplier ?? 2
   };
+  validateRetryPolicy(normalized);
+  return normalized;
+}
+function validateRetryPolicy(policy) {
+  const maxAttempts = policy.maxAttempts ?? 1;
+  const backoffMs = policy.backoffMs ?? 250;
+  const multiplier = policy.multiplier ?? 2;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > MAX_RETRY_ATTEMPTS) {
+    throw new Error(`retry.maxAttempts must be an integer from 1 to ${MAX_RETRY_ATTEMPTS}`);
+  }
+  if (!Number.isInteger(backoffMs) || backoffMs < 0 || backoffMs > MAX_RETRY_DELAY_MS) {
+    throw new Error(`retry.backoffMs must be an integer from 0 to ${MAX_RETRY_DELAY_MS}`);
+  }
+  if (!Number.isFinite(multiplier) || multiplier < 1 || multiplier > MAX_RETRY_MULTIPLIER) {
+    throw new Error(`retry.multiplier must be finite and from 1 to ${MAX_RETRY_MULTIPLIER}`);
+  }
+  if (maxAttempts > 1)
+    retryBackoffMs({ maxAttempts, backoffMs, multiplier }, maxAttempts - 1);
+}
+function retryBackoffMs(policy, attempt) {
+  const delay = Math.round(policy.backoffMs * policy.multiplier ** (attempt - 1));
+  if (!Number.isSafeInteger(delay) || delay < 0 || delay > MAX_RETRY_DELAY_MS) {
+    throw new Error(`retry policy must not produce a delay above ${MAX_RETRY_DELAY_MS}ms`);
+  }
+  return delay;
 }
 function parseJson(value) {
   return JSON.parse(value);
@@ -1933,6 +2025,9 @@ function validateDurableWebhookConfig(webhook) {
     }
   }
   for (const name of Object.keys(webhook.headers ?? {})) {
+    if (/^x-hasna-/i.test(name)) {
+      throw new Error("Durable webhook X-Hasna headers are reserved for signed delivery metadata");
+    }
     if (/authorization|cookie|api[-_]?key|token|secret|credential/i.test(name)) {
       throw new Error("Durable webhook credential headers are not persisted; use webhook.secretRef");
     }

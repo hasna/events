@@ -242,6 +242,8 @@ Headers:
 signs. The envelope `time` in the JSON body remains the original event time, so
 delayed imports and retries receive fresh replay-window signatures without
 rewriting domain history.
+Custom webhook headers whose names begin with `X-Hasna-` are rejected so channel
+configuration cannot replace signed delivery metadata.
 
 Signatures use HMAC-SHA256 over:
 
@@ -302,6 +304,9 @@ imports committed spool records into an event and matching-channel outbox in a
 SQLite `BEGIN IMMEDIATE` transaction, then removes the spool record. SQLite WAL,
 unique event/dedupe identities, unique event/channel jobs, bounded leases, and
 persisted retry timestamps make separate workers and process restarts safe.
+Producer spool records and broker event rows apply the default sensitive-key
+redaction. Each outbox row additionally applies its channel's `redact.paths`
+before the payload is persisted or delivered.
 
 ```ts
 import { DurableEventsBroker } from "@hasna/events/durable";
@@ -356,8 +361,10 @@ worker: it watches only the durable spool inbox, debounces file events, imports
 and drains immediately, wakes at the next persisted retry timestamp, and runs a
 low-frequency bounded reconciliation in case a filesystem notification was
 missed. It never watches Apple Notes or note files. SIGTERM and SIGINT stop it
-cleanly, while SQLite delivery leases prevent accidental duplicate workers from
-claiming the same job. This package change does not install, start, or enable a
+cleanly. Each worker claims only the job it is about to dispatch, and only the
+current lease owner can settle it. Delivery is still at-least-once: if a request
+outlives its lease, another worker may retry it, so receivers must deduplicate by
+`dedupeKey` or `id`. This package change does not install, start, or enable a
 runner; a canary deployment must supervise one `durable work` process explicitly.
 
 Webhook requests time out after 15 seconds unless `webhook.timeoutMs` is set.

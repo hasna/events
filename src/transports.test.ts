@@ -75,6 +75,24 @@ describe("transports", () => {
     }
   });
 
+  test("rejects custom headers that could forge signed Hasna metadata", async () => {
+    const event = createEvent({ id: "evt-protected", source: "notes", type: "note.created" });
+    for (const name of ["X-Hasna-Signature", "x-hasna-timestamp", "X-HASNA-EVENT-ID"]) {
+      await expect(dispatchWebhook(event, {
+        id: "protected-header",
+        enabled: true,
+        transport: "webhook",
+        webhook: {
+          url: "https://example.invalid",
+          secret: "runtime-secret",
+          headers: { [name]: "attacker-controlled" },
+        },
+        createdAt: event.time,
+        updatedAt: event.time,
+      })).rejects.toThrow("reserved for signed delivery metadata");
+    }
+  });
+
   test("exposes command dispatch env vars and event JSON on stdin", async () => {
     const outputPath = join(tempDir, "command.json");
     const scriptPath = join(tempDir, "capture.js");

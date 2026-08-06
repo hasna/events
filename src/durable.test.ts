@@ -116,6 +116,98 @@ describe("DurableEventsBroker", () => {
         },
       })).toThrow("credential headers are not persisted");
     }
+    expect(() => broker.addChannel({
+      id: "reserved-signature",
+      enabled: true,
+      transport: "webhook",
+      webhook: {
+        url: "https://example.invalid",
+        secretRef: "env:SAFE_REFERENCE",
+        headers: { "x-hasna-signature": "forged-signature" },
+      },
+    })).toThrow("X-Hasna headers are reserved");
+    broker.close();
+  });
+
+  test("redacts sensitive keys before event persistence and channel paths before outbox persistence", async () => {
+    const dataDir = await temporaryDataDir();
+    let deliveredBody = "";
+    const broker = new DurableEventsBroker({
+      dataDir,
+      secretResolver: () => "runtime-only-test-secret",
+      fetchImpl: async (_input, init) => {
+        deliveredBody = String(init?.body);
+        return new Response("queued", { status: 202 });
+      },
+    });
+    broker.addChannel({
+      id: "redacted-notes",
+      enabled: true,
+      transport: "webhook",
+      filters: [{ source: "notes", type: "note.created" }],
+      redact: { paths: ["data.privateBody"], replacement: "[CHANNEL-REDACTED]" },
+      webhook: { url: "https://example.invalid", secretRef: "env:SAFE_REFERENCE" },
+    });
+    const enqueued = broker.enqueue({
+      id: "redaction-event",
+      source: "notes",
+      type: "note.created",
+      data: {
+        apiKey: "default-sensitive-canary",
+        nested: { authToken: "nested-sensitive-canary" },
+        privateBody: "channel-private-canary",
+        title: "safe title",
+      },
+    });
+    expect(enqueued.event.data).toEqual({
+      apiKey: "[REDACTED]",
+      nested: { authToken: "[REDACTED]" },
+      privateBody: "channel-private-canary",
+      title: "safe title",
+    });
+    expect(await broker.drain()).toMatchObject({ delivered: 1, lost: 0 });
+    broker.close();
+
+    const database = new Database(join(dataDir, "events.sqlite"), { readonly: true });
+    const eventJson = String((database.query("SELECT envelope_json AS value FROM events").get() as { value: string }).value);
+    const outboxJson = String((database.query("SELECT event_json AS value FROM outbox").get() as { value: string }).value);
+    database.close();
+    expect(eventJson).not.toContain("default-sensitive-canary");
+    expect(eventJson).not.toContain("nested-sensitive-canary");
+    expect(outboxJson).not.toContain("default-sensitive-canary");
+    expect(outboxJson).not.toContain("nested-sensitive-canary");
+    expect(outboxJson).not.toContain("channel-private-canary");
+    expect(JSON.parse(outboxJson).data.privateBody).toBe("[CHANNEL-REDACTED]");
+    expect(JSON.parse(deliveredBody).data).toMatchObject({
+      apiKey: "[REDACTED]",
+      nested: { authToken: "[REDACTED]" },
+      privateBody: "[CHANNEL-REDACTED]",
+      title: "safe title",
+    });
+  });
+
+  test("rejects invalid or unbounded durable retry policies", async () => {
+    const broker = new DurableEventsBroker({ dataDir: await temporaryDataDir() });
+    const channel = {
+      id: "invalid-retry",
+      enabled: true,
+      transport: "webhook" as const,
+      webhook: { url: "https://example.invalid", secretRef: "env:SAFE_REFERENCE" },
+    };
+    for (const retry of [
+      { maxAttempts: 0 },
+      { maxAttempts: Number.POSITIVE_INFINITY },
+      { backoffMs: Number.NaN },
+      { backoffMs: 365 * 24 * 60 * 60 * 1_000 + 1 },
+      { maxAttempts: 3, backoffMs: 20_000_000_000, multiplier: 2 },
+      { multiplier: Number.POSITIVE_INFINITY },
+    ]) {
+      expect(() => broker.addChannel({ ...channel, retry })).toThrow(/retry/);
+    }
+    expect(() => broker.addChannel({
+      ...channel,
+      retry: { maxAttempts: 2, backoffMs: 2_147_483_648, multiplier: 1 },
+    })).not.toThrow();
     broker.close();
   });
 
@@ -342,6 +434,85 @@ describe("DurableEventsBroker", () => {
     expect(await second.drain({ workerId: "replacement" })).toMatchObject({ claimed: 1, delivered: 1 });
     expect(second.status().counts).toMatchObject({ leased: 0, delivered: 1 });
     second.close();
+  });
+
+  test("claims one job at a time and survives a true concurrent lease loss", async () => {
+    const dataDir = await temporaryDataDir();
+    let clock = new Date("2026-08-06T15:00:00.000Z");
+    let releaseFirst!: () => void;
+    let markStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const deliveredIds: string[] = [];
+    const first = new DurableEventsBroker({
+      dataDir,
+      now: () => clock,
+      secretResolver: () => "runtime-only-test-secret",
+      fetchImpl: async (_input, init) => {
+        deliveredIds.push(JSON.parse(String(init?.body)).id);
+        markStarted();
+        await firstRelease;
+        return new Response("queued", { status: 202 });
+      },
+    });
+    first.addChannel({
+      id: "notes-created",
+      enabled: true,
+      transport: "webhook",
+      filters: [{ source: "notes", type: "note.created" }],
+      webhook: { url: "https://example.invalid", secretRef: "env:SAFE_REFERENCE" },
+      retry: { maxAttempts: 3 },
+    });
+    first.enqueue({ id: "lease-one", source: "notes", type: "note.created" });
+    first.enqueue({ id: "lease-two", source: "notes", type: "note.created" });
+
+    const firstDrain = first.drain({ workerId: "worker-a", limit: 2, leaseMs: 1 });
+    await firstStarted;
+    const inspection = new Database(join(dataDir, "events.sqlite"), { readonly: true });
+    const counts = inspection.query("SELECT status, COUNT(*) AS count FROM outbox GROUP BY status").all() as Array<{ status: string; count: number }>;
+    inspection.close();
+    expect(Object.fromEntries(counts.map((row) => [row.status, Number(row.count)]))).toEqual({ leased: 1, pending: 1 });
+
+    clock = new Date(clock.getTime() + 20_001);
+    const second = new DurableEventsBroker({
+      dataDir,
+      now: () => clock,
+      secretResolver: () => "runtime-only-test-secret",
+      fetchImpl: async (_input, init) => {
+        deliveredIds.push(JSON.parse(String(init?.body)).id);
+        return new Response("queued", { status: 202 });
+      },
+    });
+    expect(await second.drain({ workerId: "worker-b", limit: 2, leaseMs: 1 })).toMatchObject({
+      claimed: 2,
+      delivered: 2,
+      lost: 0,
+    });
+    releaseFirst();
+    expect(await firstDrain).toMatchObject({ claimed: 1, delivered: 0, lost: 1 });
+    expect(deliveredIds).toHaveLength(3);
+    expect(new Set(deliveredIds)).toEqual(new Set(["lease-one", "lease-two"]));
+    expect(second.status().counts).toMatchObject({ pending: 0, leased: 0, delivered: 2 });
+    second.close();
+    first.close();
+  });
+
+  test("rejects newer and incomplete durable schema versions without rewriting them", async () => {
+    const newerDataDir = await temporaryDataDir();
+    const newerPath = join(newerDataDir, "events.sqlite");
+    const newer = new Database(newerPath, { create: true });
+    newer.exec("PRAGMA user_version = 2;");
+    newer.close();
+    expect(() => new DurableEventsBroker({ dataDir: newerDataDir })).toThrow("newer than supported version 1");
+    const unchanged = new Database(newerPath, { readonly: true });
+    expect(Number((unchanged.query("PRAGMA user_version").get() as { user_version: number }).user_version)).toBe(2);
+    unchanged.close();
+
+    const incompleteDataDir = await temporaryDataDir();
+    const incomplete = new Database(join(incompleteDataDir, "events.sqlite"), { create: true });
+    incomplete.exec("CREATE TABLE channels (id TEXT PRIMARY KEY); PRAGMA user_version = 1;");
+    incomplete.close();
+    expect(() => new DurableEventsBroker({ dataDir: incompleteDataDir })).toThrow("schema version 1 is incomplete");
   });
 
   test("does not claim queued jobs while their current channel is disabled", async () => {
