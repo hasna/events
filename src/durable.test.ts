@@ -497,6 +497,28 @@ describe("DurableEventsBroker", () => {
     first.close();
   });
 
+  test("creates and reopens an exact schema v1 from a clean version-0 database", async () => {
+    const dataDir = await temporaryDataDir();
+    const broker = new DurableEventsBroker({ dataDir });
+    expect(broker.status()).toMatchObject({ schemaVersion: 1, counts: { channels: 0, events: 0 } });
+    broker.close();
+
+    const path = join(dataDir, "events.sqlite");
+    const before = durableSchemaSnapshot(path);
+    expect(before.userVersion).toBe(1);
+    expect(before.objects.map((object) => object.name)).toEqual([
+      "events_dedupe_key_unique",
+      "events_source_type_idx",
+      "outbox_due_idx",
+      "channels",
+      "deliveries",
+      "events",
+      "outbox",
+    ]);
+    new DurableEventsBroker({ dataDir }).close();
+    expect(durableSchemaSnapshot(path)).toEqual(before);
+  });
+
   test("rejects newer and incomplete durable schema versions without rewriting them", async () => {
     const newerDataDir = await temporaryDataDir();
     const newerPath = join(newerDataDir, "events.sqlite");
@@ -512,7 +534,42 @@ describe("DurableEventsBroker", () => {
     const incomplete = new Database(join(incompleteDataDir, "events.sqlite"), { create: true });
     incomplete.exec("CREATE TABLE channels (id TEXT PRIMARY KEY); PRAGMA user_version = 1;");
     incomplete.close();
-    expect(() => new DurableEventsBroker({ dataDir: incompleteDataDir })).toThrow("schema version 1 is incomplete");
+    expect(() => new DurableEventsBroker({ dataDir: incompleteDataDir })).toThrow("schema version 1 is incompatible");
+  });
+
+  test("rejects a populated version-0 application schema without mutating it", async () => {
+    const dataDir = await temporaryDataDir();
+    const path = join(dataDir, "events.sqlite");
+    const database = new Database(path, { create: true });
+    createAllNamedSchema(database, { version: 0, enabledType: "TEXT" });
+    database.close();
+    const before = durableSchemaSnapshot(path);
+
+    expect(() => new DurableEventsBroker({ dataDir })).toThrow("version 0 requires an empty application schema");
+    expect(durableSchemaSnapshot(path)).toEqual(before);
+  });
+
+  test("rejects all-names-present version-1 shape defects without mutating them", async () => {
+    const defects: Array<{ name: string; options: MalformedSchemaOptions }> = [
+      { name: "column type", options: { enabledType: "TEXT" } },
+      { name: "foreign key", options: { outboxEventReference: "" } },
+      { name: "partial unique index", options: { dedupePredicate: "" } },
+      { name: "index column order", options: { dueIndexColumns: "available_at, status, lease_expires_at" } },
+      { name: "status check", options: { statusValues: "'pending', 'leased', 'delivered'" } },
+      { name: "outbox unique constraint", options: { uniqueColumns: "channel_id, event_id" } },
+    ];
+
+    for (const defect of defects) {
+      const dataDir = await temporaryDataDir();
+      const path = join(dataDir, "events.sqlite");
+      const database = new Database(path, { create: true });
+      createAllNamedSchema(database, { version: 1, ...defect.options });
+      database.close();
+      const before = durableSchemaSnapshot(path);
+
+      expect(() => new DurableEventsBroker({ dataDir }), defect.name).toThrow("schema version 1 is incompatible");
+      expect(durableSchemaSnapshot(path), defect.name).toEqual(before);
+    }
   });
 
   test("does not claim queued jobs while their current channel is disabled", async () => {
@@ -548,4 +605,101 @@ async function temporaryDataDir(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "hasna-events-durable-test-"));
   roots.push(root);
   return root;
+}
+
+interface MalformedSchemaOptions {
+  version?: number;
+  enabledType?: string;
+  outboxEventReference?: string;
+  dedupePredicate?: string;
+  dueIndexColumns?: string;
+  statusValues?: string;
+  uniqueColumns?: string;
+}
+
+function createAllNamedSchema(database: Database, options: MalformedSchemaOptions = {}): void {
+  const enabledType = options.enabledType ?? "INTEGER";
+  const outboxEventReference = options.outboxEventReference ?? " REFERENCES events(id)";
+  const dedupePredicate = options.dedupePredicate ?? " WHERE dedupe_key IS NOT NULL";
+  const dueIndexColumns = options.dueIndexColumns ?? "status, available_at, lease_expires_at";
+  const statusValues = options.statusValues ?? "'pending', 'leased', 'delivered', 'dead'";
+  const uniqueColumns = options.uniqueColumns ?? "event_id, channel_id";
+  database.exec(`
+    CREATE TABLE channels (
+      id TEXT PRIMARY KEY,
+      enabled ${enabledType} NOT NULL,
+      config_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE events (
+      id TEXT PRIMARY KEY,
+      dedupe_key TEXT,
+      source TEXT NOT NULL,
+      type TEXT NOT NULL,
+      time TEXT NOT NULL,
+      envelope_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX events_dedupe_key_unique ON events(dedupe_key)${dedupePredicate};
+    CREATE INDEX events_source_type_idx ON events(source, type);
+    CREATE TABLE outbox (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL${outboxEventReference},
+      channel_id TEXT NOT NULL,
+      event_json TEXT NOT NULL,
+      channel_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN (${statusValues})),
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      available_at INTEGER NOT NULL,
+      lease_owner TEXT,
+      lease_expires_at INTEGER,
+      attempts_json TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(${uniqueColumns})
+    );
+    CREATE INDEX outbox_due_idx ON outbox(${dueIndexColumns});
+    CREATE TABLE deliveries (
+      id TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL REFERENCES events(id),
+      channel_id TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO channels (id, enabled, config_json, created_at, updated_at)
+    VALUES ('schema-sentinel', 0, '{}', 'before', 'before');
+    PRAGMA user_version = ${options.version ?? 1};
+  `);
+}
+
+function durableSchemaSnapshot(path: string): {
+  userVersion: number;
+  schemaVersion: number;
+  journalMode: string;
+  objects: Array<{ type: string; name: string; table: string; sql: string | null }>;
+  channelRows: Array<{ id: string; enabled: number; config_json: string; created_at: string; updated_at: string }>;
+} {
+  const database = new Database(path, { readonly: true });
+  const userVersion = Number((database.query("PRAGMA user_version").get() as { user_version: number }).user_version);
+  const schemaVersion = Number((database.query("PRAGMA schema_version").get() as { schema_version: number }).schema_version);
+  const journalMode = String((database.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode);
+  const objects = (database.query(`
+    SELECT type, name, tbl_name, sql
+    FROM sqlite_master
+    WHERE substr(name, 1, 7) <> 'sqlite_'
+    ORDER BY type, name
+  `).all() as Array<{ type: string; name: string; tbl_name: string; sql: string | null }>).map((row) => ({
+    type: row.type,
+    name: row.name,
+    table: row.tbl_name,
+    sql: row.sql,
+  }));
+  let channelRows: Array<{ id: string; enabled: number; config_json: string; created_at: string; updated_at: string }> = [];
+  if (objects.some((object) => object.type === "table" && object.name === "channels")) {
+    const rows = database.query("SELECT id, enabled, config_json, created_at, updated_at FROM channels ORDER BY id").all();
+    channelRows = rows as typeof channelRows;
+  }
+  database.close();
+  return { userVersion, schemaVersion, journalMode, objects, channelRows };
 }

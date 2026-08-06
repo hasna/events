@@ -307,6 +307,9 @@ persisted retry timestamps make separate workers and process restarts safe.
 Producer spool records and broker event rows apply the default sensitive-key
 redaction. Each outbox row additionally applies its channel's `redact.paths`
 before the payload is persisted or delivered.
+The broker initializes schema v1 only from an empty version-0 application
+schema. Existing v1 databases must match the complete columns, constraints,
+foreign keys, and indexes; malformed or newer schemas are rejected unchanged.
 
 ```ts
 import { DurableEventsBroker } from "@hasna/events/durable";

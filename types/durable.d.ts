@@ -105,5 +105,8 @@ export declare class DurableEventsBroker {
     private ensureSchema;
     private createSchemaV1;
     private assertSchemaV1;
+    private readSchemaVersion;
+    private applicationSchemaObjects;
+    private assertEmptyApplicationSchema;
     private secureDatabaseFiles;
 }

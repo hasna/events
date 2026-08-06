@@ -1466,15 +1466,125 @@ var DURABLE_SCHEMA_VERSION = 1;
 var MAX_RETRY_ATTEMPTS = 1000;
 var MAX_RETRY_DELAY_MS = 365 * 24 * 60 * 60 * 1000;
 var MAX_RETRY_MULTIPLIER = 100;
-var REQUIRED_SCHEMA_OBJECTS = [
-  "channels",
-  "events",
-  "events_dedupe_key_unique",
-  "events_source_type_idx",
-  "outbox",
-  "outbox_due_idx",
-  "deliveries"
-];
+var SCHEMA_V1_TABLE_SQL = {
+  channels: `CREATE TABLE channels (
+    id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL,
+    config_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  events: `CREATE TABLE events (
+    id TEXT PRIMARY KEY,
+    dedupe_key TEXT,
+    source TEXT NOT NULL,
+    type TEXT NOT NULL,
+    time TEXT NOT NULL,
+    envelope_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  outbox: `CREATE TABLE outbox (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    channel_id TEXT NOT NULL,
+    event_json TEXT NOT NULL,
+    channel_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'delivered', 'dead')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    available_at INTEGER NOT NULL,
+    lease_owner TEXT,
+    lease_expires_at INTEGER,
+    attempts_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(event_id, channel_id)
+  )`,
+  deliveries: `CREATE TABLE deliveries (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL REFERENCES events(id),
+    channel_id TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`
+};
+var SCHEMA_V1_INDEX_SQL = {
+  events_dedupe_key_unique: `CREATE UNIQUE INDEX events_dedupe_key_unique
+    ON events(dedupe_key) WHERE dedupe_key IS NOT NULL`,
+  events_source_type_idx: "CREATE INDEX events_source_type_idx ON events(source, type)",
+  outbox_due_idx: "CREATE INDEX outbox_due_idx ON outbox(status, available_at, lease_expires_at)"
+};
+var SCHEMA_V1_COLUMNS = {
+  channels: [
+    { name: "id", type: "TEXT", notnull: 0, defaultValue: null, pk: 1 },
+    { name: "enabled", type: "INTEGER", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "config_json", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "created_at", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "updated_at", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }
+  ],
+  events: [
+    { name: "id", type: "TEXT", notnull: 0, defaultValue: null, pk: 1 },
+    { name: "dedupe_key", type: "TEXT", notnull: 0, defaultValue: null, pk: 0 },
+    { name: "source", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "type", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "time", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "envelope_json", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "created_at", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }
+  ],
+  outbox: [
+    { name: "id", type: "TEXT", notnull: 0, defaultValue: null, pk: 1 },
+    { name: "event_id", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "channel_id", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "event_json", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "channel_json", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "status", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "attempt_count", type: "INTEGER", notnull: 1, defaultValue: "0", pk: 0 },
+    { name: "available_at", type: "INTEGER", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "lease_owner", type: "TEXT", notnull: 0, defaultValue: null, pk: 0 },
+    { name: "lease_expires_at", type: "INTEGER", notnull: 0, defaultValue: null, pk: 0 },
+    { name: "attempts_json", type: "TEXT", notnull: 1, defaultValue: "'[]'", pk: 0 },
+    { name: "created_at", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "updated_at", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }
+  ],
+  deliveries: [
+    { name: "id", type: "TEXT", notnull: 0, defaultValue: null, pk: 1 },
+    { name: "event_id", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "channel_id", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "result_json", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 },
+    { name: "created_at", type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }
+  ]
+};
+var EVENT_FOREIGN_KEY = {
+  table: "events",
+  from: "event_id",
+  to: "id",
+  onUpdate: "NO ACTION",
+  onDelete: "NO ACTION",
+  match: "NONE"
+};
+var SCHEMA_V1_FOREIGN_KEYS = {
+  channels: [],
+  events: [],
+  outbox: [EVENT_FOREIGN_KEY],
+  deliveries: [EVENT_FOREIGN_KEY]
+};
+var SCHEMA_V1_INDEXES = {
+  channels: [
+    { name: "sqlite_autoindex_channels_1", unique: 1, origin: "pk", partial: 0, columns: ["id"] }
+  ],
+  events: [
+    { name: "events_dedupe_key_unique", unique: 1, origin: "c", partial: 1, columns: ["dedupe_key"] },
+    { name: "events_source_type_idx", unique: 0, origin: "c", partial: 0, columns: ["source", "type"] },
+    { name: "sqlite_autoindex_events_1", unique: 1, origin: "pk", partial: 0, columns: ["id"] }
+  ],
+  outbox: [
+    { name: "outbox_due_idx", unique: 0, origin: "c", partial: 0, columns: ["status", "available_at", "lease_expires_at"] },
+    { name: "sqlite_autoindex_outbox_1", unique: 1, origin: "pk", partial: 0, columns: ["id"] },
+    { name: "sqlite_autoindex_outbox_2", unique: 1, origin: "u", partial: 0, columns: ["event_id", "channel_id"] }
+  ],
+  deliveries: [
+    { name: "sqlite_autoindex_deliveries_1", unique: 1, origin: "pk", partial: 0, columns: ["id"] }
+  ]
+};
 function defaultWebhookSecretResolver(reference) {
   if (!reference.startsWith("env:"))
     throw new Error("Unsupported webhook secret reference scheme");
@@ -1505,11 +1615,11 @@ class DurableEventsBroker {
     chmodSync(this.dataDir, 448);
     this.db = new Database(this.databasePath, { create: true, strict: true });
     try {
+      this.db.exec("PRAGMA busy_timeout = 5000;");
+      this.ensureSchema();
       this.db.exec("PRAGMA journal_mode = WAL;");
       this.db.exec("PRAGMA synchronous = FULL;");
       this.db.exec("PRAGMA foreign_keys = ON;");
-      this.db.exec("PRAGMA busy_timeout = 5000;");
-      this.ensureSchema();
       this.secureDatabaseFiles();
     } catch (error) {
       this.db.close();
@@ -1877,8 +1987,7 @@ class DurableEventsBroker {
     }
   }
   ensureSchema() {
-    const row = this.db.query("PRAGMA user_version").get();
-    const version = Number(row?.user_version);
+    const version = this.readSchemaVersion();
     if (!Number.isInteger(version) || version < 0) {
       throw new Error("Durable SQLite schema version is invalid");
     }
@@ -1887,74 +1996,94 @@ class DurableEventsBroker {
     }
     if (version === 0) {
       this.immediate(() => {
+        if (this.readSchemaVersion() !== 0) {
+          throw new Error("Durable SQLite schema version changed during initialization");
+        }
+        this.assertEmptyApplicationSchema();
         this.createSchemaV1();
-        this.db.exec(`PRAGMA user_version = ${DURABLE_SCHEMA_VERSION};`);
         this.assertSchemaV1();
+        this.db.exec(`PRAGMA user_version = ${DURABLE_SCHEMA_VERSION};`);
+        if (this.readSchemaVersion() !== DURABLE_SCHEMA_VERSION) {
+          throw new Error("Durable SQLite schema version could not be recorded");
+        }
       });
       return;
     }
     this.assertSchemaV1();
   }
   createSchemaV1() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS channels (
-        id TEXT PRIMARY KEY,
-        enabled INTEGER NOT NULL,
-        config_json TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS events (
-        id TEXT PRIMARY KEY,
-        dedupe_key TEXT,
-        source TEXT NOT NULL,
-        type TEXT NOT NULL,
-        time TEXT NOT NULL,
-        envelope_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS events_dedupe_key_unique
-        ON events(dedupe_key) WHERE dedupe_key IS NOT NULL;
-      CREATE INDEX IF NOT EXISTS events_source_type_idx ON events(source, type);
-
-      CREATE TABLE IF NOT EXISTS outbox (
-        id TEXT PRIMARY KEY,
-        event_id TEXT NOT NULL REFERENCES events(id),
-        channel_id TEXT NOT NULL,
-        event_json TEXT NOT NULL,
-        channel_json TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('pending', 'leased', 'delivered', 'dead')),
-        attempt_count INTEGER NOT NULL DEFAULT 0,
-        available_at INTEGER NOT NULL,
-        lease_owner TEXT,
-        lease_expires_at INTEGER,
-        attempts_json TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        UNIQUE(event_id, channel_id)
-      );
-      CREATE INDEX IF NOT EXISTS outbox_due_idx ON outbox(status, available_at, lease_expires_at);
-
-      CREATE TABLE IF NOT EXISTS deliveries (
-        id TEXT PRIMARY KEY,
-        event_id TEXT NOT NULL REFERENCES events(id),
-        channel_id TEXT NOT NULL,
-        result_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
-
-    `);
+    for (const sql of Object.values(SCHEMA_V1_TABLE_SQL))
+      this.db.exec(`${sql};`);
+    for (const sql of Object.values(SCHEMA_V1_INDEX_SQL))
+      this.db.exec(`${sql};`);
   }
   assertSchemaV1() {
-    const rows = this.db.query(`
-      SELECT name FROM sqlite_master
-      WHERE type IN ('table', 'index') AND name IN (${REQUIRED_SCHEMA_OBJECTS.map(() => "?").join(", ")})
-    `).all(...REQUIRED_SCHEMA_OBJECTS);
-    const found = new Set(rows.map((row) => row.name));
-    const missing = REQUIRED_SCHEMA_OBJECTS.filter((name) => !found.has(name));
-    if (missing.length > 0) {
-      throw new Error(`Durable SQLite schema version 1 is incomplete: missing ${missing.join(", ")}`);
+    const objects = this.applicationSchemaObjects();
+    const expectedObjects = [
+      ...Object.entries(SCHEMA_V1_TABLE_SQL).map(([name, sql]) => ({ type: "table", name, table: name, sql })),
+      ...Object.entries(SCHEMA_V1_INDEX_SQL).map(([name, sql]) => ({
+        type: "index",
+        name,
+        table: schemaIndexTable(name),
+        sql
+      }))
+    ].sort(compareSchemaObjects);
+    assertSchemaShape("application objects", objects.map(({ type, name, table }) => ({ type, name, table })), expectedObjects.map(({ type, name, table }) => ({ type, name, table })));
+    for (const table of Object.keys(SCHEMA_V1_TABLE_SQL)) {
+      const columns = this.db.query(`PRAGMA table_info(${schemaIdentifier(table)})`).all().map((column) => ({
+        name: column.name,
+        type: column.type,
+        notnull: Number(column.notnull),
+        defaultValue: column.dflt_value,
+        pk: Number(column.pk)
+      }));
+      assertSchemaShape(`${table} columns`, columns, SCHEMA_V1_COLUMNS[table]);
+      const foreignKeys = this.db.query(`PRAGMA foreign_key_list(${schemaIdentifier(table)})`).all().map((foreignKey) => ({
+        table: foreignKey.table,
+        from: foreignKey.from,
+        to: foreignKey.to,
+        onUpdate: foreignKey.on_update,
+        onDelete: foreignKey.on_delete,
+        match: foreignKey.match
+      })).sort((left, right) => `${left.from}:${left.table}`.localeCompare(`${right.from}:${right.table}`));
+      assertSchemaShape(`${table} foreign keys`, foreignKeys, SCHEMA_V1_FOREIGN_KEYS[table]);
+      const indexes = this.db.query(`PRAGMA index_list(${schemaIdentifier(table)})`).all().map((index) => ({
+        name: index.name,
+        unique: Number(index.unique),
+        origin: index.origin,
+        partial: Number(index.partial),
+        columns: this.db.query(`PRAGMA index_info(${schemaIdentifier(index.name)})`).all().sort((left, right) => Number(left.seqno) - Number(right.seqno)).map((column) => column.name)
+      })).sort((left, right) => left.name.localeCompare(right.name));
+      const expectedIndexes = [...SCHEMA_V1_INDEXES[table]].sort((left, right) => left.name.localeCompare(right.name));
+      assertSchemaShape(`${table} indexes`, indexes, expectedIndexes);
+    }
+    for (const expected of expectedObjects) {
+      const actual = objects.find((object) => object.type === expected.type && object.name === expected.name);
+      if (!actual?.sql || normalizeSchemaSql(actual.sql) !== normalizeSchemaSql(expected.sql)) {
+        throw incompatibleSchema(`${expected.type} ${expected.name} SQL`);
+      }
+    }
+  }
+  readSchemaVersion() {
+    const row = this.db.query("PRAGMA user_version").get();
+    return Number(row?.user_version);
+  }
+  applicationSchemaObjects() {
+    return this.db.query(`
+      SELECT type, name, tbl_name, sql
+      FROM sqlite_master
+      WHERE substr(name, 1, 7) <> 'sqlite_'
+      ORDER BY type, name
+    `).all().map((row) => ({
+      type: row.type,
+      name: row.name,
+      table: row.tbl_name,
+      sql: row.sql
+    }));
+  }
+  assertEmptyApplicationSchema() {
+    if (this.applicationSchemaObjects().length !== 0) {
+      throw new Error("Durable SQLite schema version 0 requires an empty application schema");
     }
   }
   secureDatabaseFiles() {
@@ -1964,6 +2093,31 @@ class DurableEventsBroker {
       chmodSync(path, 384);
     }
   }
+}
+function schemaIndexTable(name) {
+  if (name === "events_dedupe_key_unique" || name === "events_source_type_idx")
+    return "events";
+  if (name === "outbox_due_idx")
+    return "outbox";
+  throw new Error(`Unknown durable schema index: ${name}`);
+}
+function schemaIdentifier(value) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value))
+    throw new Error("Invalid durable schema identifier");
+  return value;
+}
+function compareSchemaObjects(left, right) {
+  return `${left.type}:${left.name}`.localeCompare(`${right.type}:${right.name}`);
+}
+function normalizeSchemaSql(sql) {
+  return sql.trim().replace(/;$/, "").replace(/\s+/g, " ").replace(/\s*([(),])\s*/g, "$1").toLowerCase();
+}
+function assertSchemaShape(label, actual, expected) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected))
+    throw incompatibleSchema(label);
+}
+function incompatibleSchema(detail) {
+  return new Error(`Durable SQLite schema version 1 is incompatible: ${detail}`);
 }
 function normalizePositiveInteger(value, fallback, name) {
   const resolved = value ?? fallback;
