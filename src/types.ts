@@ -59,7 +59,16 @@ export interface RedactionConfig {
 
 export interface WebhookTransportConfig {
   url: string;
+  /**
+   * Legacy inline HMAC secret. Durable stores should reject this field so
+   * credential material is never persisted with channel configuration.
+   */
   secret?: string;
+  /**
+   * Runtime-only HMAC secret reference, for example
+   * `env:HASNA_NOTES_WEBHOOK_SECRET`.
+   */
+  secretRef?: string;
   headers?: Record<string, string>;
   timeoutMs?: number;
 }

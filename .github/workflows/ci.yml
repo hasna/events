@@ -25,8 +25,8 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Build
-        run: bun run build
+      - name: Build and check committed artifacts
+        run: bun run generated-artifacts:check
 
       - name: Test
         run: bun test

@@ -13,8 +13,10 @@ then the legacy `HASNA_EVENTS_HOME` fallback.
 
 ## Storage Runtime Contract
 
-The default runtime is local JSON files. It does not use local SQLite, remote
-Postgres, S3, AWS infrastructure, or live cloud mutation:
+The default compatibility runtime is local JSON files. It does not use local
+SQLite, remote Postgres, S3, AWS infrastructure, or live cloud mutation. Apps
+that require cross-process idempotency and restart-safe webhook delivery should
+use the opt-in durable spool and SQLite broker described below.
 
 ```ts
 import { getEventsStatus } from "@hasna/events";
@@ -56,7 +58,8 @@ changes is an explicit deployment/approval step, not part of this local runtime.
 bun add @hasna/events
 ```
 
-The runtime requires Bun 1.0 or newer.
+The core CLI and durable SQLite broker require Bun 1.0 or newer. The isolated
+`@hasna/events/durable-spool` producer export supports Node 20 or newer.
 
 ## Event Envelope
 
@@ -233,7 +236,14 @@ Headers:
 - `X-Hasna-Event-Id`
 - `X-Hasna-Event-Type`
 - `X-Hasna-Timestamp`
-- `X-Hasna-Signature` when `webhook.secret` is configured
+- `X-Hasna-Signature` when `webhook.secret` or `webhook.secretRef` resolves
+
+`X-Hasna-Timestamp` is the current delivery-attempt time and is what the HMAC
+signs. The envelope `time` in the JSON body remains the original event time, so
+delayed imports and retries receive fresh replay-window signatures without
+rewriting domain history.
+Custom webhook headers whose names begin with `X-Hasna-` are rejected so channel
+configuration cannot replace signed delivery metadata.
 
 Signatures use HMAC-SHA256 over:
 
@@ -259,9 +269,112 @@ const ok = verifyWebhookSignature(secret, timestamp, body, signature);
 Pass an explicit `toleranceMs` when a consumer needs a tighter or wider replay
 window.
 
+## Durable Node Producer And Bun Delivery Worker
+
+`@hasna/events/durable-spool` is the producer boundary for Node 20+ apps. It
+has no Bun runtime import and performs no network access. Each enqueue writes a
+mode-0600 temporary file, fsyncs it, hard-links it without replacement to an
+identity-keyed final name, removes the temporary file, and fsyncs the inbox
+directory. Concurrent producers with the same `dedupeKey` converge on one
+immutable record.
+
+```ts
+import { DurableEventSpool } from "@hasna/events/durable-spool";
+
+const spool = new DurableEventSpool({ dataDir: process.env.HASNA_EVENTS_DIR! });
+await spool.enqueue({
+  id: "notes:note:123:created",
+  source: "notes",
+  type: "note.created",
+  time: "2026-08-06T12:00:00.000Z",
+  subject: "note:123",
+  dedupeKey: "notes:note:123:created",
+  schemaVersion: "notes.v1",
+  data: {
+    noteId: "123",
+    createdAt: "2026-08-06T12:00:00.000Z",
+    originMachine: "station03",
+  },
+  metadata: {},
+});
+```
+
+`@hasna/events/durable` is Bun-only because it uses `bun:sqlite`. The broker
+imports committed spool records into an event and matching-channel outbox in a
+SQLite `BEGIN IMMEDIATE` transaction, then removes the spool record. SQLite WAL,
+unique event/dedupe identities, unique event/channel jobs, bounded leases, and
+persisted retry timestamps make separate workers and process restarts safe.
+Producer spool records and broker event rows apply the default sensitive-key
+redaction. Each outbox row additionally applies its channel's `redact.paths`
+before the payload is persisted or delivered.
+The broker initializes schema v1 only from an empty version-0 application
+schema. Existing v1 databases must match the complete columns, constraints,
+foreign keys, and indexes; malformed or newer schemas are rejected unchanged.
+
+```ts
+import { DurableEventsBroker } from "@hasna/events/durable";
+
+const broker = new DurableEventsBroker({ dataDir: process.env.HASNA_EVENTS_DIR! });
+broker.addChannel({
+  id: "notes-created",
+  enabled: false,
+  transport: "webhook",
+  filters: [{ source: "notes", type: "note.created" }],
+  webhook: {
+    url: "https://example.com/events/notes",
+    secretRef: "env:HASNA_NOTES_WEBHOOK_SECRET",
+  },
+  retry: { maxAttempts: 5, backoffMs: 1_000, multiplier: 2 },
+});
+
+broker.importSpool();
+await broker.drain();
+broker.close();
+```
+
+Durable SQLite channels reject inline `webhook.secret` values. The default
+resolver supports `env:VARIABLE_NAME`; callers can inject a vault-backed
+resolver. Resolved credential values are used only to sign the in-memory HTTP
+request and are never stored in channel configuration, the outbox, delivery
+history, or status output.
+
+Any HTTP 2xx response acknowledges delivery. The receiver therefore must return
+2xx only after durably enqueueing the event and must deduplicate by `dedupeKey`
+or `id`. Non-2xx responses, timeouts, and unresolved runtime secrets follow the
+persisted retry schedule. Exhausted jobs remain `dead`; an operator can call
+`retryDead({ eventId, channelId, limit })` or use `events durable retry-dead`
+without creating a second event/channel outbox identity.
+
+The Bun CLI exposes the same operator boundary:
+
+```bash
+events --dir "$HASNA_EVENTS_DIR" durable channel https://example.com/events/notes \
+  --id notes-created --source notes --type note.created \
+  --secret-ref env:HASNA_NOTES_WEBHOOK_SECRET --disabled
+
+events --dir "$HASNA_EVENTS_DIR" durable drain --limit 100
+events --dir "$HASNA_EVENTS_DIR" durable work --limit 100
+events --dir "$HASNA_EVENTS_DIR" durable retry-dead --limit 100
+events --dir "$HASNA_EVENTS_DIR" durable status
+```
+
+`durable drain` imports and processes one bounded batch, then exits. Enqueueing
+alone never performs network delivery. `durable work` is the long-running Bun
+worker: it watches only the durable spool inbox, debounces file events, imports
+and drains immediately, wakes at the next persisted retry timestamp, and runs a
+low-frequency bounded reconciliation in case a filesystem notification was
+missed. It never watches Apple Notes or note files. SIGTERM and SIGINT stop it
+cleanly. Each worker claims only the job it is about to dispatch, and only the
+current lease owner can settle it. Delivery is still at-least-once: if a request
+outlives its lease, another worker may retry it, so receivers must deduplicate by
+`dedupeKey` or `id`. This package change does not install, start, or enable a
+runner; a canary deployment must supervise one `durable work` process explicitly.
+
 Webhook requests time out after 15 seconds unless `webhook.timeoutMs` is set.
-Non-2xx responses and network failures are recorded as failed attempts. Stored
-response bodies are truncated after 4,096 characters.
+Non-2xx responses and network failures are recorded as failed attempts. The
+compatibility JSON delivery path stores response bodies truncated after 4,096
+characters; durable delivery intentionally omits response bodies, stdout, and
+stderr from its outbox and delivery history.
 
 ## Command Transport
 
